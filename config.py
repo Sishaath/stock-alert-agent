@@ -21,14 +21,54 @@ KITE_USER_ID    = os.getenv("KITE_USER_ID",    "")
 KITE_PASSWORD   = os.getenv("KITE_PASSWORD",   "")
 KITE_TOTP_SECRET = os.getenv("KITE_TOTP_SECRET", "")
 
-# ─── Alert Thresholds ─────────────────────────────────────────────────────────
-HOLDINGS_DROP_THRESHOLD  = 20    # % below your average buy price
-WATCHLIST_DROP_THRESHOLD = 20    # % below 52-week high
-VOLUME_SPIKE_MULTIPLIER  = 3     # x times the 30-day average daily volume
-FII_DII_THRESHOLD_CRORES = 3000  # ₹ crore net FII or DII flow
+# ─── Alert Thresholds & Settings (Dynamic Loader) ──────────────────────────────
+import json
 
-# ─── Duplicate Alert Prevention ───────────────────────────────────────────────
-ALERT_COOLDOWN_HOURS = 4
+SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
+
+def load_settings() -> dict:
+    default_settings = {
+        "HOLDINGS_DROP_THRESHOLD": 20.0,
+        "WATCHLIST_DROP_THRESHOLD": 20.0,
+        "VOLUME_SPIKE_MULTIPLIER": 3.0,
+        "FII_DII_THRESHOLD_CRORES": 3000.0,
+        "ALERT_COOLDOWN_HOURS": 4.0,
+    }
+    try:
+        if os.path.exists(SETTINGS_FILE):
+            with open(SETTINGS_FILE, "r") as f:
+                saved = json.load(f)
+                for k, v in saved.items():
+                    if k in default_settings:
+                        default_settings[k] = float(v)
+    except Exception as e:
+        import logging
+        logging.getLogger("config").error(f"Failed to load settings: {e}")
+    return default_settings
+
+def save_settings(settings: dict) -> None:
+    try:
+        valid_keys = {
+            "HOLDINGS_DROP_THRESHOLD",
+            "WATCHLIST_DROP_THRESHOLD",
+            "VOLUME_SPIKE_MULTIPLIER",
+            "FII_DII_THRESHOLD_CRORES",
+            "ALERT_COOLDOWN_HOURS",
+        }
+        to_save = {k: float(v) for k, v in settings.items() if k in valid_keys}
+        with open(SETTINGS_FILE, "w") as f:
+            json.dump(to_save, f, indent=2)
+    except Exception as e:
+        import logging
+        logging.getLogger("config").error(f"Failed to save settings: {e}")
+
+_settings = load_settings()
+
+HOLDINGS_DROP_THRESHOLD  = _settings["HOLDINGS_DROP_THRESHOLD"]
+WATCHLIST_DROP_THRESHOLD = _settings["WATCHLIST_DROP_THRESHOLD"]
+VOLUME_SPIKE_MULTIPLIER  = _settings["VOLUME_SPIKE_MULTIPLIER"]
+FII_DII_THRESHOLD_CRORES = _settings["FII_DII_THRESHOLD_CRORES"]
+ALERT_COOLDOWN_HOURS     = _settings["ALERT_COOLDOWN_HOURS"]
 
 # ─── Indian Market Hours (IST) ────────────────────────────────────────────────
 MARKET_OPEN_HOUR    = 9

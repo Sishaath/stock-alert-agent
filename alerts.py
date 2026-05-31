@@ -342,3 +342,68 @@ def check_sebi_filings_alert(
         log["sebi_seen_ids"] = list(seen_ids | set(new_seen))
         _save_log(log)
         logger.info(f"Marked {len(new_seen)} new filings as seen.")
+
+
+# ─── 6. SEBI Press Releases ───────────────────────────────────────────────────
+
+def check_sebi_press_releases_alert(
+    releases: list[dict],
+    all_symbols: list[str],
+) -> None:
+    """
+    Send a one-time alert for every new SEBI press release that mentions
+    any stock in your holdings or watchlist.
+
+    Uses permanent deduplication via sebi_seen_ids.
+    """
+    if not releases:
+        return
+
+    import re
+    log      = _load_log()
+    seen_ids = set(log.get("sebi_seen_ids", []))
+    new_seen = []
+
+    relevant_symbols = {s.upper() for s in all_symbols}
+
+    for item in releases:
+        release_id = str(item.get("id") or "").strip()
+        title      = item.get("title", "")
+        date_str   = item.get("date", "")
+        url        = item.get("url", "")
+
+        if not release_id:
+            continue
+
+        if release_id in seen_ids:
+            continue
+
+        # Check if the title mentions any of our tracked symbols as a word
+        title_upper = title.upper()
+        matched_symbol = None
+        for symbol in relevant_symbols:
+            pattern = r'\b' + re.escape(symbol) + r'\b'
+            if re.search(pattern, title_upper):
+                matched_symbol = symbol
+                break
+
+        if not matched_symbol:
+            continue
+
+        # New, relevant press release — send an alert
+        message = (
+            f"SEBI Press Release — {matched_symbol} Mentioned\n"
+            f"Title: {title}\n"
+            f"Posted: {date_str}\n"
+            f"Link: {url}"
+        )
+
+        if send_alert(message, priority="high"):
+            new_seen.append(release_id)
+            logger.info(f"[ALERT] SEBI Press Release for {matched_symbol}: {title[:70]}")
+
+    # Persist newly seen IDs so we never alert for them again
+    if new_seen:
+        log["sebi_seen_ids"] = list(seen_ids | set(new_seen))
+        _save_log(log)
+        logger.info(f"Marked {len(new_seen)} new SEBI press releases as seen.")

@@ -27,6 +27,7 @@ from alerts import (
     check_volume_spike,
     check_fii_dii_alert,
     check_sebi_filings_alert,
+    check_sebi_press_releases_alert,
 )
 from holdings_manager import load_holdings
 from watchlist_manager import load_watchlist
@@ -196,15 +197,28 @@ def maybe_run_fii_dii() -> None:
 # ─── Task 3: SEBI/NSE filings every 30 minutes ───────────────────────────────
 
 def run_sebi_check() -> None:
-    logger.info("── Filing check ──────────────────────────────────────")
+    logger.info("── Filing & SEBI check ───────────────────────────────")
     holdings    = load_holdings()
     watchlist   = load_watchlist()
     all_symbols = list(set([h["symbol"] for h in holdings] + watchlist))
     if not all_symbols:
         return
-    announcements = scrapers.get_all_announcements(all_symbols)
-    check_sebi_filings_alert(announcements, all_symbols)
-    logger.info("── Filing check done ─────────────────────────────────")
+    
+    # 1. NSE announcements
+    try:
+        announcements = scrapers.get_all_announcements(all_symbols)
+        check_sebi_filings_alert(announcements, all_symbols)
+    except Exception as e:
+        logger.error(f"Error checking NSE announcements: {e}")
+        
+    # 2. SEBI press releases
+    try:
+        releases = scrapers.get_sebi_press_releases()
+        check_sebi_press_releases_alert(releases, all_symbols)
+    except Exception as e:
+        logger.error(f"Error checking SEBI press releases: {e}")
+        
+    logger.info("── Filing & SEBI check done ──────────────────────────")
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
