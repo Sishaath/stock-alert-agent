@@ -8,7 +8,9 @@ Two things run in parallel:
 Deploy on Railway as a 'web' service so it gets a public URL for postbacks.
 """
 
+import json
 import logging
+import os
 import threading
 import time
 from datetime import datetime
@@ -48,6 +50,20 @@ IST    = ZoneInfo("Asia/Kolkata")
 _avg_volume_cache: dict = {}
 _cache_date: str        = ""
 _fii_dii_last_date: str = ""
+
+
+def _save_price_cache(quotes: dict) -> None:
+    """Save latest quotes to disk so the dashboard can read them without calling NSE."""
+    from config import DATA_DIR
+    cache_file = os.path.join(DATA_DIR, "prices_cache.json")
+    try:
+        with open(cache_file, "w") as f:
+            json.dump({
+                "quotes":     quotes,
+                "updated_at": datetime.now(IST).isoformat(),
+            }, f)
+    except Exception as e:
+        logger.error(f"Failed to save price cache: {e}")
 
 
 def is_market_open() -> bool:
@@ -101,6 +117,9 @@ def run_market_checks() -> None:
     if not quotes:
         logger.error("No quotes returned from NSE — skipping this cycle.")
         return
+
+    # Save to cache so the dashboard can display prices without calling NSE again
+    _save_price_cache(quotes)
 
     check_holdings_price_drop(holdings, quotes)
     check_watchlist_price_drop(watchlist, quotes)

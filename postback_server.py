@@ -131,14 +131,23 @@ def view_holdings():
     """Live dashboard showing holdings and watchlist with current prices."""
     from holdings_manager import load_holdings
     from watchlist_manager import load_watchlist
-    import market_data
+    from config import DATA_DIR
+    import json, os
 
     holdings  = load_holdings()
     watchlist = load_watchlist()
 
-    holding_symbols  = [h["symbol"] for h in holdings]
-    all_symbols      = list(set(holding_symbols + watchlist))
-    quotes           = market_data.get_quotes(all_symbols) if all_symbols else {}
+    # Read from price cache written by the scheduler — avoids calling NSE from here
+    cache_file = os.path.join(DATA_DIR, "prices_cache.json")
+    quotes     = {}
+    updated_at = ""
+    try:
+        with open(cache_file, "r") as f:
+            cache      = json.load(f)
+            quotes     = cache.get("quotes", {})
+            updated_at = cache.get("updated_at", "")
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
 
     # Build holdings rows
     holdings_rows = ""
@@ -192,7 +201,16 @@ def view_holdings():
 
     from datetime import datetime
     from zoneinfo import ZoneInfo
-    now_str = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%d %b %Y, %I:%M %p IST")
+    now_str   = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%d %b %Y, %I:%M %p IST")
+    price_str = ""
+    if updated_at:
+        try:
+            dt        = datetime.fromisoformat(updated_at).astimezone(ZoneInfo("Asia/Kolkata"))
+            price_str = f"&nbsp;·&nbsp; Prices as of {dt.strftime('%I:%M %p IST')}"
+        except Exception:
+            pass
+    if not price_str:
+        price_str = "&nbsp;·&nbsp; Prices update every 5 min during market hours"
 
     html = f"""<!DOCTYPE html>
 <html>
@@ -219,7 +237,7 @@ def view_holdings():
 </head>
 <body>
   <h1>Stock Alert Dashboard</h1>
-  <p class="sub">Updated: {now_str} &nbsp;·&nbsp; Auto-refreshes every 5 min via agent</p>
+  <p class="sub">Loaded: {now_str}{price_str}</p>
 
   <div class="cards">
     <div class="card">
