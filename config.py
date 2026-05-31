@@ -50,7 +50,17 @@ SEBI_PRESS_RELEASES_URL = "https://www.sebi.gov.in/media/press-releases.html"
 # Locally  : files live in the current directory (default ".")
 # Railway  : set DATA_DIR=/data and attach a Volume mounted at /data
 DATA_DIR = os.getenv("DATA_DIR", ".")
-os.makedirs(DATA_DIR, exist_ok=True)  # create /data if it doesn't exist yet
+os.makedirs(DATA_DIR, exist_ok=True)
+
+# On first run, copy default files from the app directory into DATA_DIR
+# (Railway volumes start empty — this seeds them with the repo defaults)
+import shutil as _shutil
+_app_dir = os.path.dirname(os.path.abspath(__file__))
+for _fname in ["holdings.json", "watchlist.json", "alerts_log.json"]:
+    _dest = os.path.join(DATA_DIR, _fname)
+    _src  = os.path.join(_app_dir, _fname)
+    if not os.path.exists(_dest) and os.path.exists(_src):
+        _shutil.copy(_src, _dest)
 
 # ─── File Paths ───────────────────────────────────────────────────────────────
 HOLDINGS_FILE   = os.path.join(DATA_DIR, "holdings.json")
