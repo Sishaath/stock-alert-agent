@@ -231,130 +231,218 @@ def view_holdings():
             q["week_high_52"] = high52
         updated_at = ""  # shown as live fetch in subtitle
 
-    # Build holdings rows
+    def initials(s):
+        return s[:2].upper()
+
+    # Build holdings cards
     holdings_rows = ""
     total_invested = 0
     total_current  = 0
     for h in holdings:
-        sym       = h["symbol"]
-        qty       = h["quantity"]
-        avg       = h["average_price"]
-        cur       = quotes.get(sym, {}).get("last_price", 0)
-        invested  = qty * avg
-        current   = qty * cur if cur else 0
-        pnl       = current - invested
-        pnl_pct   = ((cur - avg) / avg * 100) if avg and cur else 0
-        color     = "#4ade80" if pnl >= 0 else "#f87171"
-        arrow     = "▲" if pnl >= 0 else "▼"
+        sym      = h["symbol"]
+        qty      = h["quantity"]
+        avg      = h["average_price"]
+        cur      = quotes.get(sym, {}).get("last_price", 0)
+        invested = qty * avg
+        current  = qty * cur if cur else 0
+        pnl      = current - invested
+        pnl_pct  = ((cur - avg) / avg * 100) if avg and cur else 0
+        up       = pnl >= 0
+        cls      = "up" if up else "down"
+        arrow    = "▲" if up else "▼"
         total_invested += invested
         total_current  += current if cur else invested
-        cur_str   = f"₹{cur:,.2f}" if cur else "—"
+        cur_str  = f"₹{cur:,.2f}" if cur else "—"
         holdings_rows += f"""
         <tr>
-            <td><b>{sym}</b></td>
-            <td>{qty:.0f}</td>
-            <td>₹{avg:,.2f}</td>
-            <td>{cur_str}</td>
-            <td style="color:{color}">{arrow} {pnl_pct:.1f}%</td>
-            <td style="color:{color}">₹{pnl:,.0f}</td>
+          <td><div class="sym"><span class="avatar">{initials(sym)}</span><span class="sym-name">{sym}</span></div></td>
+          <td class="num">{qty:.0f}</td>
+          <td class="num">₹{avg:,.2f}</td>
+          <td class="num">{cur_str}</td>
+          <td class="num"><span class="pill {cls}">{arrow} {abs(pnl_pct):.1f}%</span></td>
+          <td class="num {cls}">{'+' if up else '−'}₹{abs(pnl):,.0f}</td>
         </tr>"""
 
     total_pnl     = total_current - total_invested
     total_pnl_pct = (total_pnl / total_invested * 100) if total_invested else 0
-    total_color   = "#4ade80" if total_pnl >= 0 else "#f87171"
+    total_up      = total_pnl >= 0
+    total_cls     = "up" if total_up else "down"
 
-    # Build watchlist rows
+    # Build watchlist cards
     watchlist_rows = ""
+    near_count = 0
     for sym in watchlist:
         q        = quotes.get(sym, {})
         cur      = q.get("last_price", 0)
         high_52w = q.get("week_high_52", 0)
         drop_pct = ((high_52w - cur) / high_52w * 100) if high_52w and cur else 0
-        color    = "#f87171" if drop_pct >= 20 else "#94a3b8"
+        hot      = drop_pct >= 20
+        if hot:
+            near_count += 1
+        cls      = "down" if hot else "muted"
         cur_str  = f"₹{cur:,.2f}" if cur else "—"
         h52_str  = f"₹{high_52w:,.2f}" if high_52w else "—"
+        flag     = '<span class="hot">BUY ZONE</span>' if hot else ''
         watchlist_rows += f"""
         <tr>
-            <td><b>{sym}</b></td>
-            <td>{h52_str}</td>
-            <td>{cur_str}</td>
-            <td style="color:{color}">▼ {drop_pct:.1f}%</td>
+          <td><div class="sym"><span class="avatar wl">{initials(sym)}</span><span class="sym-name">{sym}</span>{flag}</div></td>
+          <td class="num">{h52_str}</td>
+          <td class="num">{cur_str}</td>
+          <td class="num"><span class="pill {cls}">▼ {drop_pct:.1f}%</span></td>
         </tr>"""
 
     from datetime import datetime
     from zoneinfo import ZoneInfo
-    now_str   = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%d %b %Y, %I:%M %p IST")
-    price_str = ""
+    now_str   = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%d %b %Y, %I:%M %p")
     if updated_at:
         try:
             dt        = datetime.fromisoformat(updated_at).astimezone(ZoneInfo("Asia/Kolkata"))
-            price_str = f"&nbsp;·&nbsp; Prices as of {dt.strftime('%I:%M %p IST')}"
+            price_str = f"Prices as of {dt.strftime('%I:%M %p IST')}"
         except Exception:
-            pass
-    if not price_str:
-        price_str = "&nbsp;·&nbsp; Live fetch from Kite"
+            price_str = "Live from Kite"
+    else:
+        price_str = "Live from Kite"
+
+    pnl_sign = "+" if total_up else "−"
 
     html = f"""<!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Stock Alert Dashboard</title>
+  <title>Portfolio · Stock Alerts</title>
+  <meta http-equiv="refresh" content="300">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <style>
-    * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-    body {{ background: #0f172a; color: #e2e8f0; font-family: -apple-system, sans-serif; padding: 24px; }}
-    h1 {{ font-size: 22px; font-weight: 700; margin-bottom: 4px; }}
-    .sub {{ color: #64748b; font-size: 13px; margin-bottom: 28px; }}
-    .cards {{ display: flex; gap: 16px; margin-bottom: 28px; flex-wrap: wrap; }}
-    .card {{ background: #1e293b; border-radius: 12px; padding: 18px 24px; flex: 1; min-width: 160px; }}
-    .card .label {{ font-size: 12px; color: #64748b; margin-bottom: 6px; }}
-    .card .value {{ font-size: 22px; font-weight: 700; }}
-    h2 {{ font-size: 16px; font-weight: 600; margin-bottom: 12px; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.05em; }}
-    table {{ width: 100%; border-collapse: collapse; background: #1e293b; border-radius: 12px; overflow: hidden; margin-bottom: 28px; }}
-    th {{ background: #0f172a; padding: 12px 16px; text-align: left; font-size: 12px; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; }}
-    td {{ padding: 13px 16px; font-size: 14px; border-top: 1px solid #0f172a; }}
-    tr:hover td {{ background: #263348; }}
-    .badge {{ display: inline-block; padding: 2px 8px; border-radius: 99px; font-size: 11px; font-weight: 600; background: #4ade8022; color: #4ade80; }}
+    *{{box-sizing:border-box;margin:0;padding:0}}
+    :root{{
+      --bg:#0a0e1a; --panel:rgba(255,255,255,.04); --border:rgba(255,255,255,.08);
+      --text:#e8ecf5; --muted:#7c89a5; --up:#22e08a; --down:#ff5c7c; --accent:#6366f1;
+    }}
+    html{{-webkit-text-size-adjust:100%}}
+    body{{
+      background:var(--bg); color:var(--text);
+      font-family:'Inter',-apple-system,sans-serif; min-height:100vh;
+      padding:28px 20px 60px; position:relative; overflow-x:hidden;
+    }}
+    body::before{{
+      content:""; position:fixed; top:-40%; left:-10%; width:60%; height:80%;
+      background:radial-gradient(circle, rgba(99,102,241,.18), transparent 70%);
+      filter:blur(40px); z-index:-1;
+    }}
+    body::after{{
+      content:""; position:fixed; bottom:-40%; right:-10%; width:60%; height:80%;
+      background:radial-gradient(circle, rgba(34,224,138,.10), transparent 70%);
+      filter:blur(40px); z-index:-1;
+    }}
+    .wrap{{max-width:1080px;margin:0 auto}}
+    .top{{display:flex;align-items:center;justify-content:space-between;margin-bottom:28px;flex-wrap:wrap;gap:12px}}
+    .brand{{display:flex;align-items:center;gap:12px}}
+    .logo{{width:40px;height:40px;border-radius:12px;background:linear-gradient(135deg,var(--accent),#22e08a);display:flex;align-items:center;justify-content:center;font-size:20px}}
+    .brand h1{{font-size:19px;font-weight:700;letter-spacing:-.02em}}
+    .brand p{{font-size:12px;color:var(--muted);font-weight:500}}
+    .live{{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--muted);background:var(--panel);border:1px solid var(--border);padding:7px 13px;border-radius:99px}}
+    .dot{{width:7px;height:7px;border-radius:50%;background:var(--up);box-shadow:0 0 0 0 rgba(34,224,138,.6);animation:pulse 2s infinite}}
+    @keyframes pulse{{0%{{box-shadow:0 0 0 0 rgba(34,224,138,.5)}}70%{{box-shadow:0 0 0 8px rgba(34,224,138,0)}}100%{{box-shadow:0 0 0 0 rgba(34,224,138,0)}}}}
+
+    .hero{{
+      background:linear-gradient(135deg, rgba(99,102,241,.12), rgba(34,224,138,.04));
+      border:1px solid var(--border); border-radius:22px; padding:28px 30px; margin-bottom:18px;
+      backdrop-filter:blur(20px);
+    }}
+    .hero .lbl{{font-size:13px;color:var(--muted);font-weight:500;margin-bottom:8px}}
+    .hero .big{{font-size:42px;font-weight:800;letter-spacing:-.03em;line-height:1}}
+    .hero .chg{{display:inline-flex;align-items:center;gap:6px;margin-top:12px;font-size:15px;font-weight:600;padding:5px 12px;border-radius:99px}}
+    .chg.up{{background:rgba(34,224,138,.14);color:var(--up)}}
+    .chg.down{{background:rgba(255,92,124,.14);color:var(--down)}}
+
+    .stats{{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:32px}}
+    .stat{{background:var(--panel);border:1px solid var(--border);border-radius:16px;padding:18px 20px;backdrop-filter:blur(20px)}}
+    .stat .lbl{{font-size:12px;color:var(--muted);font-weight:500;margin-bottom:7px}}
+    .stat .val{{font-size:21px;font-weight:700;letter-spacing:-.02em}}
+
+    .sec{{display:flex;align-items:center;gap:10px;margin:0 4px 14px}}
+    .sec h2{{font-size:14px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}}
+    .sec .count{{font-size:12px;font-weight:600;color:var(--accent);background:rgba(99,102,241,.14);padding:2px 9px;border-radius:99px}}
+
+    .panel{{background:var(--panel);border:1px solid var(--border);border-radius:18px;overflow:hidden;margin-bottom:32px;backdrop-filter:blur(20px)}}
+    table{{width:100%;border-collapse:collapse}}
+    th{{text-align:right;padding:14px 18px;font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--border)}}
+    th:first-child{{text-align:left}}
+    td{{padding:15px 18px;font-size:14px;border-bottom:1px solid rgba(255,255,255,.04);vertical-align:middle}}
+    tr:last-child td{{border-bottom:none}}
+    tbody tr{{transition:background .15s}}
+    tbody tr:hover{{background:rgba(255,255,255,.03)}}
+    .num{{text-align:right;font-variant-numeric:tabular-nums;font-weight:500}}
+    .sym{{display:flex;align-items:center;gap:11px}}
+    .avatar{{width:34px;height:34px;border-radius:10px;background:linear-gradient(135deg,#6366f1,#8b5cf6);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#fff;flex-shrink:0}}
+    .avatar.wl{{background:linear-gradient(135deg,#0ea5e9,#22d3ee)}}
+    .sym-name{{font-weight:600;letter-spacing:-.01em}}
+    .pill{{display:inline-block;padding:4px 10px;border-radius:8px;font-size:12.5px;font-weight:600;font-variant-numeric:tabular-nums}}
+    .pill.up{{background:rgba(34,224,138,.14);color:var(--up)}}
+    .pill.down{{background:rgba(255,92,124,.14);color:var(--down)}}
+    .pill.muted{{background:rgba(124,137,165,.12);color:var(--muted)}}
+    .up{{color:var(--up)}} .down{{color:var(--down)}}
+    .hot{{margin-left:8px;font-size:10px;font-weight:700;letter-spacing:.05em;background:rgba(34,224,138,.16);color:var(--up);padding:3px 7px;border-radius:6px}}
+    .foot{{text-align:center;color:var(--muted);font-size:12px;margin-top:8px}}
+
+    @media(max-width:640px){{
+      body{{padding:20px 14px 40px}}
+      .hero .big{{font-size:34px}}
+      .stats{{grid-template-columns:1fr;gap:10px}}
+      th:nth-child(2),td:nth-child(2){{display:none}}
+      .avatar{{width:30px;height:30px}}
+    }}
   </style>
 </head>
 <body>
-  <h1>Stock Alert Dashboard</h1>
-  <p class="sub">Loaded: {now_str}{price_str}</p>
+  <div class="wrap">
+    <div class="top">
+      <div class="brand">
+        <div class="logo">📈</div>
+        <div>
+          <h1>Portfolio</h1>
+          <p>{price_str}</p>
+        </div>
+      </div>
+      <div class="live"><span class="dot"></span> Live · {now_str}</div>
+    </div>
 
-  <div class="cards">
-    <div class="card">
-      <div class="label">Invested</div>
-      <div class="value">₹{total_invested:,.0f}</div>
+    <div class="hero">
+      <div class="lbl">Current Value</div>
+      <div class="big">₹{total_current:,.0f}</div>
+      <div class="chg {total_cls}">{'▲' if total_up else '▼'} {pnl_sign}₹{abs(total_pnl):,.0f} ({abs(total_pnl_pct):.2f}%)</div>
     </div>
-    <div class="card">
-      <div class="label">Current Value</div>
-      <div class="value">₹{total_current:,.0f}</div>
+
+    <div class="stats">
+      <div class="stat"><div class="lbl">Invested</div><div class="val">₹{total_invested:,.0f}</div></div>
+      <div class="stat"><div class="lbl">Holdings</div><div class="val">{len(holdings)}</div></div>
+      <div class="stat"><div class="lbl">Watchlist</div><div class="val">{len(watchlist)}</div></div>
     </div>
-    <div class="card">
-      <div class="label">Total P&amp;L</div>
-      <div class="value" style="color:{total_color}">₹{total_pnl:,.0f} ({total_pnl_pct:.1f}%)</div>
+
+    <div class="sec"><h2>Holdings</h2><span class="count">{len(holdings)}</span></div>
+    <div class="panel">
+      <table>
+        <thead><tr>
+          <th>Symbol</th><th>Qty</th><th>Avg</th><th>LTP</th><th>Return</th><th>P&amp;L</th>
+        </tr></thead>
+        <tbody>{holdings_rows}</tbody>
+      </table>
     </div>
-    <div class="card">
-      <div class="label">Holdings</div>
-      <div class="value">{len(holdings)}</div>
+
+    <div class="sec"><h2>Watchlist</h2>{f'<span class="count">{near_count} in buy zone</span>' if near_count else ''}</div>
+    <div class="panel">
+      <table>
+        <thead><tr>
+          <th>Symbol</th><th>52W High</th><th>LTP</th><th>From High</th>
+        </tr></thead>
+        <tbody>{watchlist_rows}</tbody>
+      </table>
     </div>
+
+    <p class="foot">Auto-refreshes every 5 minutes · Alerts via ntfy.sh</p>
   </div>
-
-  <h2>Holdings</h2>
-  <table>
-    <thead><tr>
-      <th>Symbol</th><th>Qty</th><th>Avg Price</th><th>Current</th><th>Return</th><th>P&amp;L</th>
-    </tr></thead>
-    <tbody>{holdings_rows}</tbody>
-  </table>
-
-  <h2>Watchlist</h2>
-  <table>
-    <thead><tr>
-      <th>Symbol</th><th>52W High</th><th>Current</th><th>Drop from High</th>
-    </tr></thead>
-    <tbody>{watchlist_rows}</tbody>
-  </table>
 </body>
 </html>"""
 
