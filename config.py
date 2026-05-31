@@ -21,6 +21,12 @@ KITE_USER_ID    = os.getenv("KITE_USER_ID",    "")
 KITE_PASSWORD   = os.getenv("KITE_PASSWORD",   "")
 KITE_TOTP_SECRET = os.getenv("KITE_TOTP_SECRET", "")
 
+# ─── Persistent storage directory ─────────────────────────────────────────────
+# Locally  : files live in the current directory (default ".")
+# Railway  : set DATA_DIR=/data and attach a Volume mounted at /data
+DATA_DIR = os.getenv("DATA_DIR", ".")
+os.makedirs(DATA_DIR, exist_ok=True)
+
 # ─── Alert Thresholds & Settings (Dynamic Loader) ──────────────────────────────
 import json
 
@@ -92,11 +98,7 @@ NSE_ANNOUNCEMENTS_URL = (
 # ─── SEBI Endpoint ────────────────────────────────────────────────────────────
 SEBI_PRESS_RELEASES_URL = "https://www.sebi.gov.in/media/press-releases.html"
 
-# ─── Persistent storage directory ─────────────────────────────────────────────
-# Locally  : files live in the current directory (default ".")
-# Railway  : set DATA_DIR=/data and attach a Volume mounted at /data
-DATA_DIR = os.getenv("DATA_DIR", ".")
-os.makedirs(DATA_DIR, exist_ok=True)
+# Persistent storage directory defined at the top of the file
 
 # On first run, copy default files from the app directory into DATA_DIR
 # (Railway volumes start empty — this seeds them with the repo defaults)
