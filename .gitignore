@@ -1,0 +1,21 @@
+# Environment variables — never commit this
+.env
+
+# Alert log resets on each deploy anyway — no need to track it
+alerts_log.json
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE files
+.vscode/
+.idea/
+*.swp

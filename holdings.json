@@ -1,0 +1,5 @@
+[
+  {"symbol": "HDFCBANK", "quantity": 10, "average_price": 1650.00},
+  {"symbol": "RELIANCE", "quantity": 5,  "average_price": 2500.00},
+  {"symbol": "INFY",     "quantity": 8,  "average_price": 1400.00}
+]
