@@ -87,16 +87,16 @@ def refresh_daily_cache(quotes: dict) -> None:
     today = str(datetime.now(IST).date())
     if _cache_date == today and _daily_cache:
         return
-    logger.info("Refreshing 30-day avg volume cache...")
+    logger.info("Refreshing daily cache (52W high + avg volume)...")
     cache = {}
     for symbol, quote in quotes.items():
-        token   = quote.get("instrument_token")
-        avg_vol = kite_client.get_30day_avg_volume(token)
-        cache[symbol] = {"avg_volume": avg_vol}
+        token            = quote.get("instrument_token")
+        high52, avg_vol  = kite_client.get_daily_stats(token)
+        cache[symbol]    = {"week_high_52": high52, "avg_volume": avg_vol}
         time.sleep(0.2)
     _daily_cache = cache
     _cache_date  = today
-    logger.info(f"Volume cache ready: {len(cache)} symbols.")
+    logger.info(f"Daily cache ready: {len(cache)} symbols.")
 
 
 # ─── Task 1: Market checks every 5 minutes ───────────────────────────────────
@@ -129,6 +129,11 @@ def run_market_checks() -> None:
         return
 
     refresh_daily_cache(quotes)
+
+    # Merge 52-week high from daily cache into each quote (Kite quote lacks it)
+    for symbol, quote in quotes.items():
+        if symbol in _daily_cache:
+            quote["week_high_52"] = _daily_cache[symbol]["week_high_52"]
 
     # avg_volumes for volume spike check
     avg_volumes = {

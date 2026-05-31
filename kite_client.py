@@ -194,13 +194,20 @@ def get_quotes(symbols: list[str], exchange: str = "NSE") -> dict:
         return {}
 
 
-def get_30day_avg_volume(instrument_token: int) -> float | None:
-    """Compute 30-day average daily volume from Kite historical data."""
+def get_daily_stats(instrument_token: int) -> tuple[float, float | None]:
+    """
+    From one year of daily candles, compute:
+      - 52-week high price
+      - 30-day average daily volume
+
+    Kite's quote() API does not return 52-week high, so we derive it here.
+    Returns (week_high_52, avg_volume_30d). Called once per day and cached.
+    """
     if not instrument_token:
-        return None
+        return 0.0, None
     try:
         to_date   = datetime.now().date()
-        from_date = to_date - timedelta(days=45)
+        from_date = to_date - timedelta(days=380)  # ~1 year + buffer
         history   = kite.historical_data(
             instrument_token=instrument_token,
             from_date=from_date,
@@ -208,12 +215,15 @@ def get_30day_avg_volume(instrument_token: int) -> float | None:
             interval="day",
         )
         if not history:
-            return None
-        # Average the volume of the last 30 candles (plain Python, no pandas)
-        volumes = [row["volume"] for row in history[-30:] if row.get("volume")]
-        if not volumes:
-            return None
-        return round(sum(volumes) / len(volumes), 0)
+            return 0.0, None
+
+        highs        = [row["high"] for row in history if row.get("high")]
+        week_high_52 = round(max(highs), 2) if highs else 0.0
+
+        volumes      = [row["volume"] for row in history[-30:] if row.get("volume")]
+        avg_volume   = round(sum(volumes) / len(volumes), 0) if volumes else None
+
+        return week_high_52, avg_volume
     except Exception as e:
         logger.error(f"Historical data error for token {instrument_token}: {e}")
-        return None
+        return 0.0, None

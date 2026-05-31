@@ -221,11 +221,15 @@ def view_holdings():
     except (FileNotFoundError, json.JSONDecodeError):
         pass
 
-    # If cache is empty, fetch directly from Finnhub
+    # If cache is empty (e.g. weekend or fresh boot), fetch live from Kite
     if not quotes and all_symbols:
-        import market_data
-        quotes     = market_data.get_quotes(all_symbols)
-        updated_at = ""  # will show as live fetch in subtitle
+        import kite_client
+        quotes = kite_client.get_quotes(all_symbols)
+        # Kite quote lacks 52-week high — fill it from historical data
+        for sym, q in quotes.items():
+            high52, _ = kite_client.get_daily_stats(q.get("instrument_token"))
+            q["week_high_52"] = high52
+        updated_at = ""  # shown as live fetch in subtitle
 
     # Build holdings rows
     holdings_rows = ""
@@ -288,7 +292,7 @@ def view_holdings():
         except Exception:
             pass
     if not price_str:
-        price_str = "&nbsp;·&nbsp; Live fetch from Finnhub"
+        price_str = "&nbsp;·&nbsp; Live fetch from Kite"
 
     html = f"""<!DOCTYPE html>
 <html>
