@@ -1,209 +1,145 @@
 """
-market_data.py — Fetches real-time market data directly from NSE website APIs.
+market_data.py — Real-time Indian stock data via Finnhub API.
 
-No login. No tokens. No passwords. No daily renewal.
-Uses the same internal APIs that power nseindia.com — data is real-time.
+Works from any server globally — no geo-blocking, no tokens, no daily renewal.
+Free tier: 60 API calls/minute (plenty for 10-15 stocks every 5 minutes).
 
-Functions:
-    get_quotes(symbols)        — live price, volume, 52-week high for all symbols
-    get_30day_avg_volume(sym)  — historical average daily volume (for spike detection)
+Sign up at finnhub.io to get a free API key.
+Add FINNHUB_API_KEY to your .env and Railway environment variables.
 """
 
 import logging
+import os
 import time
 from datetime import datetime, timedelta
 
 import requests
 
-from config import (
-    NSE_BASE_URL,
-    NSE_QUOTE_URL,
-    NSE_HISTORY_URL,
-    VOLUME_HISTORY_DAYS,
-)
+from config import VOLUME_HISTORY_DAYS
 
-logger = logging.getLogger(__name__)
-
-# NSE blocks plain requests without browser-like headers and session cookies.
-# We visit the NSE homepage first to get valid cookies, then hit the APIs.
-_NSE_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
-    ),
-    "Accept":          "application/json, text/plain, */*",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Referer":         "https://www.nseindia.com/",
-    "Connection":      "keep-alive",
-}
+logger     = logging.getLogger(__name__)
+_BASE_URL  = "https://finnhub.io/api/v1"
+_API_KEY   = os.getenv("FINNHUB_API_KEY", "")
 
 
-class _NSESession:
-    """Cookie-aware HTTP session for NSE APIs."""
-
-    def __init__(self):
-        self.session = requests.Session()
-        self._init_cookies()
-
-    def _init_cookies(self) -> None:
-        """Hit the NSE homepage to receive valid session cookies."""
-        try:
-            self.session.get(
-                NSE_BASE_URL,
-                headers={**_NSE_HEADERS, "Accept": "text/html,application/xhtml+xml"},
-                timeout=20,
-            )
-            logger.debug("NSE session cookies initialised.")
-        except requests.RequestException as e:
-            logger.warning(f"NSE cookie init failed (will retry on first request): {e}")
-
-    def get(self, url: str, **kwargs) -> requests.Response | None:
-        """GET request with auto-retry on 403 (stale cookies)."""
-        try:
-            resp = self.session.get(url, headers=_NSE_HEADERS, timeout=20, **kwargs)
-            if resp.status_code == 403:
-                logger.warning("NSE returned 403 — refreshing cookies and retrying.")
-                self._init_cookies()
-                resp = self.session.get(url, headers=_NSE_HEADERS, timeout=20, **kwargs)
-            resp.raise_for_status()
-            return resp
-        except requests.exceptions.Timeout:
-            logger.error(f"NSE request timed out: {url}")
-            return None
-        except requests.RequestException as e:
-            logger.error(f"NSE request failed [{url}]: {e}")
-            return None
+def _sym(symbol: str) -> str:
+    """Convert NSE ticker to Finnhub format: RELIANCE → NSE:RELIANCE"""
+    return f"NSE:{symbol.upper()}"
 
 
-# Single shared session for all market data calls
-_session = _NSESession()
+def _get(endpoint: str, params: dict) -> dict | None:
+    """Make a Finnhub API call. Returns parsed JSON or None on failure."""
+    if not _API_KEY:
+        logger.error("FINNHUB_API_KEY is not set.")
+        return None
+    try:
+        resp = requests.get(
+            f"{_BASE_URL}/{endpoint}",
+            params={**params, "token": _API_KEY},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except requests.exceptions.Timeout:
+        logger.error(f"Finnhub timeout on /{endpoint}")
+        return None
+    except Exception as e:
+        logger.error(f"Finnhub error on /{endpoint}: {e}")
+        return None
 
 
 # ─── Live Quote ───────────────────────────────────────────────────────────────
 
 def _get_quote(symbol: str) -> dict | None:
     """
-    Fetch a real-time quote for one NSE stock.
-
-    Returns dict with:
-        last_price   — current market price (real-time)
-        volume       — shares traded so far today
-        week_high_52 — 52-week high price
-        week_low_52  — 52-week low price
+    Fetch current price + today's partial volume for one NSE stock.
+    Makes 2 API calls: one for price, one for today's intraday volume.
     """
-    resp = _session.get(NSE_QUOTE_URL, params={"symbol": symbol.upper()})
-    if resp is None:
-        logger.warning(f"No response from NSE for {symbol}")
+    # Current price
+    price_data = _get("quote", {"symbol": _sym(symbol)})
+    if not price_data or float(price_data.get("c", 0)) == 0:
+        logger.warning(f"No price data for {symbol} (market may be closed or symbol invalid)")
         return None
 
-    try:
-        data       = resp.json()
-        price_info = data.get("priceInfo", {})
-        week_hl    = price_info.get("weekHighLow", {})
-        trade_info = data.get("marketDeptOrderBook", {}).get("tradeInfo", {})
+    current_price = round(float(price_data["c"]), 2)
 
-        last_price   = float(price_info.get("lastPrice", 0))
-        week_high_52 = float(week_hl.get("max", 0))
-        week_low_52  = float(week_hl.get("min", 0))
-        volume       = int(str(trade_info.get("totalTradedVolume", 0)).replace(",", "") or 0)
+    # Today's traded volume — fetch last 5 daily candles, take latest
+    to_ts   = int(datetime.now().timestamp())
+    from_ts = int((datetime.now() - timedelta(days=7)).timestamp())
+    candles = _get("stock/candle", {
+        "symbol":     _sym(symbol),
+        "resolution": "D",
+        "from":       from_ts,
+        "to":         to_ts,
+    })
+    volume = 0
+    if candles and candles.get("s") == "ok" and candles.get("v"):
+        volume = int(candles["v"][-1])
 
-        if last_price <= 0:
-            logger.warning(f"NSE returned zero price for {symbol} — market may be closed.")
-            return None
-
-        return {
-            "last_price":   last_price,
-            "volume":       volume,
-            "week_high_52": week_high_52,
-            "week_low_52":  week_low_52,
-        }
-
-    except (ValueError, KeyError, TypeError) as e:
-        logger.error(f"Failed to parse NSE quote for {symbol}: {e}")
-        return None
+    return {
+        "last_price":   current_price,
+        "volume":       volume,
+        "week_high_52": 0,   # injected later from daily cache
+        "week_low_52":  0,
+    }
 
 
 def get_quotes(symbols: list[str]) -> dict:
     """
-    Fetch real-time quotes for a list of NSE stock symbols.
+    Fetch live quotes for a list of NSE stocks.
 
-    Args:
-        symbols: List of NSE tickers, e.g. ["RELIANCE", "TCS", "INFY"]
-
-    Returns:
-        Dict mapping symbol -> { last_price, volume, week_high_52, week_low_52 }
-        Symbols that fail are silently omitted.
+    Returns { symbol: { last_price, volume, week_high_52, week_low_52 } }
+    week_high_52 starts as 0 — main.py merges the daily cache into it.
     """
     results: dict = {}
-
     for symbol in symbols:
         quote = _get_quote(symbol)
         if quote:
             results[symbol] = quote
-            logger.debug(
-                f"{symbol}: ₹{quote['last_price']} | "
-                f"Vol: {quote['volume']:,} | "
-                f"52W High: ₹{quote['week_high_52']}"
-            )
-        # Small delay between calls — be polite to NSE servers
-        time.sleep(0.4)
+            logger.debug(f"{symbol}: ₹{quote['last_price']} | Vol: {quote['volume']:,}")
+        time.sleep(0.3)   # stay well within 60 calls/min rate limit
 
     logger.info(f"Fetched live quotes for {len(results)}/{len(symbols)} symbols.")
     return results
 
 
-# ─── 30-Day Average Volume ────────────────────────────────────────────────────
+# ─── Historical Data (cached once daily) ─────────────────────────────────────
+
+def get_52week_high_and_avg_volume(symbol: str) -> tuple[float, float | None]:
+    """
+    Fetch one year of daily candles and return:
+        - 52-week high price
+        - 30-day average daily volume
+
+    Called once per day and cached — avoids repeated historical API calls.
+    """
+    to_ts   = int(datetime.now().timestamp())
+    from_ts = int((datetime.now() - timedelta(days=380)).timestamp())  # ~1 year + buffer
+
+    candles = _get("stock/candle", {
+        "symbol":     _sym(symbol),
+        "resolution": "D",
+        "from":       from_ts,
+        "to":         to_ts,
+    })
+
+    if not candles or candles.get("s") != "ok":
+        logger.warning(f"No historical candles for {symbol}")
+        return 0.0, None
+
+    highs   = candles.get("h", [])
+    volumes = candles.get("v", [])
+
+    week_high_52 = round(max(highs), 2) if highs else 0.0
+
+    recent_vols  = [v for v in volumes[-VOLUME_HISTORY_DAYS:] if v > 0]
+    avg_volume   = round(sum(recent_vols) / len(recent_vols), 0) if recent_vols else None
+
+    logger.debug(f"{symbol}: 52W High=₹{week_high_52} | 30D Avg Vol={avg_volume:,.0f}" if avg_volume else f"{symbol}: 52W High=₹{week_high_52}")
+    return week_high_52, avg_volume
+
 
 def get_30day_avg_volume(symbol: str) -> float | None:
-    """
-    Compute the average daily trading volume over the last 30 trading days
-    using NSE historical data.
-
-    Called once per day at market open and cached in main.py.
-
-    Args:
-        symbol: NSE stock ticker, e.g. "RELIANCE"
-
-    Returns:
-        Average daily volume as float, or None on failure.
-    """
-    to_date   = datetime.now().date()
-    from_date = to_date - timedelta(days=VOLUME_HISTORY_DAYS + 15)  # buffer for holidays
-
-    params = {
-        "symbol": symbol.upper(),
-        "series": '["EQ"]',
-        "from":   from_date.strftime("%d-%m-%Y"),
-        "to":     to_date.strftime("%d-%m-%Y"),
-    }
-
-    resp = _session.get(NSE_HISTORY_URL, params=params)
-    if resp is None:
-        return None
-
-    try:
-        rows = resp.json().get("data", [])
-        if not rows:
-            logger.warning(f"No historical data returned for {symbol}")
-            return None
-
-        # Take only the last 30 trading days and average their volumes
-        recent = rows[-VOLUME_HISTORY_DAYS:]
-        volumes = [
-            int(str(row.get("CH_TOT_TRADED_QTY", 0)).replace(",", "") or 0)
-            for row in recent
-            if row.get("CH_TOT_TRADED_QTY")
-        ]
-
-        if not volumes:
-            return None
-
-        avg = round(sum(volumes) / len(volumes), 0)
-        logger.debug(f"{symbol}: 30-day avg volume = {avg:,.0f}")
-        return avg
-
-    except (ValueError, KeyError, TypeError) as e:
-        logger.error(f"Failed to compute avg volume for {symbol}: {e}")
-        return None
+    """Convenience wrapper used by main.py volume cache."""
+    _, avg_vol = get_52week_high_and_avg_volume(symbol)
+    return avg_vol

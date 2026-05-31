@@ -47,7 +47,7 @@ logger = logging.getLogger("main")
 IST    = ZoneInfo("Asia/Kolkata")
 
 # ─── Daily volume cache ───────────────────────────────────────────────────────
-_avg_volume_cache: dict = {}
+_daily_cache: dict      = {}   # { symbol: { week_high_52, avg_volume } }
 _cache_date: str        = ""
 _fii_dii_last_date: str = ""
 
@@ -75,21 +75,21 @@ def is_market_open() -> bool:
     return open_ <= now <= close_
 
 
-def refresh_volume_cache(all_symbols: list[str]) -> None:
-    global _avg_volume_cache, _cache_date
+def refresh_daily_cache(all_symbols: list[str]) -> None:
+    """Fetch 52-week high and 30-day avg volume for all symbols once per day."""
+    global _daily_cache, _cache_date
     today = str(datetime.now(IST).date())
-    if _cache_date == today and _avg_volume_cache:
+    if _cache_date == today and _daily_cache:
         return
-    logger.info(f"Refreshing 30-day volume cache for {len(all_symbols)} symbols...")
+    logger.info(f"Refreshing daily cache (52W high + avg volume) for {len(all_symbols)} symbols...")
     cache = {}
     for symbol in all_symbols:
-        avg = market_data.get_30day_avg_volume(symbol)
-        if avg:
-            cache[symbol] = avg
+        high, avg_vol = market_data.get_52week_high_and_avg_volume(symbol)
+        cache[symbol] = {"week_high_52": high, "avg_volume": avg_vol}
         time.sleep(0.3)
-    _avg_volume_cache = cache
-    _cache_date       = today
-    logger.info(f"Volume cache ready: {len(cache)} symbols.")
+    _daily_cache = cache
+    _cache_date  = today
+    logger.info(f"Daily cache ready: {len(cache)} symbols.")
 
 
 # ─── Task 1: Market checks every 5 minutes ───────────────────────────────────
@@ -111,19 +111,31 @@ def run_market_checks() -> None:
         logger.warning("Holdings and watchlist are both empty — nothing to monitor.")
         return
 
-    refresh_volume_cache(all_symbols)
+    refresh_daily_cache(all_symbols)
 
     quotes = market_data.get_quotes(all_symbols)
     if not quotes:
-        logger.error("No quotes returned from NSE — skipping this cycle.")
+        logger.error("No quotes returned from Finnhub — skipping this cycle.")
         return
 
-    # Save to cache so the dashboard can display prices without calling NSE again
+    # Merge 52-week high from daily cache into each quote
+    for symbol, quote in quotes.items():
+        if symbol in _daily_cache:
+            quote["week_high_52"] = _daily_cache[symbol]["week_high_52"]
+
+    # Build avg_volumes dict for volume spike check
+    avg_volumes = {
+        sym: data["avg_volume"]
+        for sym, data in _daily_cache.items()
+        if data.get("avg_volume")
+    }
+
+    # Save to cache so the dashboard can display prices
     _save_price_cache(quotes)
 
     check_holdings_price_drop(holdings, quotes)
     check_watchlist_price_drop(watchlist, quotes)
-    check_volume_spike(quotes, _avg_volume_cache)
+    check_volume_spike(quotes, avg_volumes)
 
     logger.info("── Market check done ─────────────────────────────────")
 

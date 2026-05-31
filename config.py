@@ -11,6 +11,9 @@ load_dotenv()
 NTFY_TOPIC = os.getenv("NTFY_TOPIC", "my_stock_alerts")
 NTFY_URL   = f"https://ntfy.sh/{NTFY_TOPIC}"
 
+# ─── Finnhub API ──────────────────────────────────────────────────────────────
+FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "")
+
 # ─── Kite postback validation ─────────────────────────────────────────────────
 # Used only to verify postbacks are genuinely from Zerodha — no API calls made
 KITE_API_SECRET = os.getenv("KITE_API_SECRET", "")
