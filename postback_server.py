@@ -120,6 +120,12 @@ def postback():
     return jsonify({"status": "ok"}), 200
 
 
+@app.route("/", methods=["GET"])
+def index():
+    from flask import redirect
+    return redirect("/holdings")
+
+
 @app.route("/health", methods=["GET"])
 def health():
     """Health check endpoint — Railway uses this to verify the service is running."""
