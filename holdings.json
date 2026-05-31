@@ -1,5 +1,7 @@
 [
-  {"symbol": "HDFCBANK", "quantity": 10, "average_price": 1650.00},
-  {"symbol": "RELIANCE", "quantity": 5,  "average_price": 2500.00},
-  {"symbol": "INFY",     "quantity": 8,  "average_price": 1400.00}
+  {"symbol": "GOLDBEES",   "quantity": 100, "average_price": 113.03},
+  {"symbol": "IOC",        "quantity": 20,  "average_price": 137.98},
+  {"symbol": "ITC",        "quantity": 2,   "average_price": 291.05},
+  {"symbol": "ITCHOTELS",  "quantity": 10,  "average_price": 140.73},
+  {"symbol": "SILVERBEES", "quantity": 31,  "average_price": 201.41}
 ]
