@@ -16,7 +16,8 @@ from zoneinfo import ZoneInfo
 
 import pyotp
 import requests as req_lib
-from kiteconnect import KiteConnect, KiteException
+from kiteconnect import KiteConnect
+from kiteconnect.exceptions import KiteException
 
 from config import (
     DATA_DIR,
