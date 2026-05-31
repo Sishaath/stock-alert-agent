@@ -143,7 +143,10 @@ def view_holdings():
     holdings  = load_holdings()
     watchlist = load_watchlist()
 
-    # Read from price cache written by the scheduler — avoids calling NSE from here
+    holding_symbols = [h["symbol"] for h in holdings]
+    all_symbols     = list(set(holding_symbols + watchlist))
+
+    # Try cache first
     cache_file = os.path.join(DATA_DIR, "prices_cache.json")
     quotes     = {}
     updated_at = ""
@@ -154,6 +157,12 @@ def view_holdings():
             updated_at = cache.get("updated_at", "")
     except (FileNotFoundError, json.JSONDecodeError):
         pass
+
+    # If cache is empty, fetch directly from Finnhub
+    if not quotes and all_symbols:
+        import market_data
+        quotes     = market_data.get_quotes(all_symbols)
+        updated_at = ""  # will show as live fetch in subtitle
 
     # Build holdings rows
     holdings_rows = ""
@@ -216,7 +225,7 @@ def view_holdings():
         except Exception:
             pass
     if not price_str:
-        price_str = "&nbsp;·&nbsp; Prices update every 5 min during market hours"
+        price_str = "&nbsp;·&nbsp; Live fetch from Finnhub"
 
     html = f"""<!DOCTYPE html>
 <html>
