@@ -128,12 +128,137 @@ def health():
 
 @app.route("/holdings", methods=["GET"])
 def view_holdings():
-    """
-    Quick view of current holdings — open in browser to check.
-    https://<your-railway-app>.up.railway.app/holdings
-    """
+    """Live dashboard showing holdings and watchlist with current prices."""
     from holdings_manager import load_holdings
-    return jsonify(load_holdings()), 200
+    from watchlist_manager import load_watchlist
+    import market_data
+
+    holdings  = load_holdings()
+    watchlist = load_watchlist()
+
+    holding_symbols  = [h["symbol"] for h in holdings]
+    all_symbols      = list(set(holding_symbols + watchlist))
+    quotes           = market_data.get_quotes(all_symbols) if all_symbols else {}
+
+    # Build holdings rows
+    holdings_rows = ""
+    total_invested = 0
+    total_current  = 0
+    for h in holdings:
+        sym       = h["symbol"]
+        qty       = h["quantity"]
+        avg       = h["average_price"]
+        cur       = quotes.get(sym, {}).get("last_price", 0)
+        invested  = qty * avg
+        current   = qty * cur if cur else 0
+        pnl       = current - invested
+        pnl_pct   = ((cur - avg) / avg * 100) if avg and cur else 0
+        color     = "#4ade80" if pnl >= 0 else "#f87171"
+        arrow     = "▲" if pnl >= 0 else "▼"
+        total_invested += invested
+        total_current  += current if cur else invested
+        cur_str   = f"₹{cur:,.2f}" if cur else "—"
+        holdings_rows += f"""
+        <tr>
+            <td><b>{sym}</b></td>
+            <td>{qty:.0f}</td>
+            <td>₹{avg:,.2f}</td>
+            <td>{cur_str}</td>
+            <td style="color:{color}">{arrow} {pnl_pct:.1f}%</td>
+            <td style="color:{color}">₹{pnl:,.0f}</td>
+        </tr>"""
+
+    total_pnl     = total_current - total_invested
+    total_pnl_pct = (total_pnl / total_invested * 100) if total_invested else 0
+    total_color   = "#4ade80" if total_pnl >= 0 else "#f87171"
+
+    # Build watchlist rows
+    watchlist_rows = ""
+    for sym in watchlist:
+        q        = quotes.get(sym, {})
+        cur      = q.get("last_price", 0)
+        high_52w = q.get("week_high_52", 0)
+        drop_pct = ((high_52w - cur) / high_52w * 100) if high_52w and cur else 0
+        color    = "#f87171" if drop_pct >= 20 else "#94a3b8"
+        cur_str  = f"₹{cur:,.2f}" if cur else "—"
+        h52_str  = f"₹{high_52w:,.2f}" if high_52w else "—"
+        watchlist_rows += f"""
+        <tr>
+            <td><b>{sym}</b></td>
+            <td>{h52_str}</td>
+            <td>{cur_str}</td>
+            <td style="color:{color}">▼ {drop_pct:.1f}%</td>
+        </tr>"""
+
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    now_str = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%d %b %Y, %I:%M %p IST")
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Stock Alert Dashboard</title>
+  <style>
+    * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+    body {{ background: #0f172a; color: #e2e8f0; font-family: -apple-system, sans-serif; padding: 24px; }}
+    h1 {{ font-size: 22px; font-weight: 700; margin-bottom: 4px; }}
+    .sub {{ color: #64748b; font-size: 13px; margin-bottom: 28px; }}
+    .cards {{ display: flex; gap: 16px; margin-bottom: 28px; flex-wrap: wrap; }}
+    .card {{ background: #1e293b; border-radius: 12px; padding: 18px 24px; flex: 1; min-width: 160px; }}
+    .card .label {{ font-size: 12px; color: #64748b; margin-bottom: 6px; }}
+    .card .value {{ font-size: 22px; font-weight: 700; }}
+    h2 {{ font-size: 16px; font-weight: 600; margin-bottom: 12px; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.05em; }}
+    table {{ width: 100%; border-collapse: collapse; background: #1e293b; border-radius: 12px; overflow: hidden; margin-bottom: 28px; }}
+    th {{ background: #0f172a; padding: 12px 16px; text-align: left; font-size: 12px; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; }}
+    td {{ padding: 13px 16px; font-size: 14px; border-top: 1px solid #0f172a; }}
+    tr:hover td {{ background: #263348; }}
+    .badge {{ display: inline-block; padding: 2px 8px; border-radius: 99px; font-size: 11px; font-weight: 600; background: #4ade8022; color: #4ade80; }}
+  </style>
+</head>
+<body>
+  <h1>Stock Alert Dashboard</h1>
+  <p class="sub">Updated: {now_str} &nbsp;·&nbsp; Auto-refreshes every 5 min via agent</p>
+
+  <div class="cards">
+    <div class="card">
+      <div class="label">Invested</div>
+      <div class="value">₹{total_invested:,.0f}</div>
+    </div>
+    <div class="card">
+      <div class="label">Current Value</div>
+      <div class="value">₹{total_current:,.0f}</div>
+    </div>
+    <div class="card">
+      <div class="label">Total P&amp;L</div>
+      <div class="value" style="color:{total_color}">₹{total_pnl:,.0f} ({total_pnl_pct:.1f}%)</div>
+    </div>
+    <div class="card">
+      <div class="label">Holdings</div>
+      <div class="value">{len(holdings)}</div>
+    </div>
+  </div>
+
+  <h2>Holdings</h2>
+  <table>
+    <thead><tr>
+      <th>Symbol</th><th>Qty</th><th>Avg Price</th><th>Current</th><th>Return</th><th>P&amp;L</th>
+    </tr></thead>
+    <tbody>{holdings_rows}</tbody>
+  </table>
+
+  <h2>Watchlist</h2>
+  <table>
+    <thead><tr>
+      <th>Symbol</th><th>52W High</th><th>Current</th><th>Drop from High</th>
+    </tr></thead>
+    <tbody>{watchlist_rows}</tbody>
+  </table>
+</body>
+</html>"""
+
+    return html, 200, {"Content-Type": "text/html"}
 
 
 def run_server() -> None:
