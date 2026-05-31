@@ -19,7 +19,6 @@ Alert types:
 import json
 import logging
 from datetime import datetime
-from typing import Optional
 from zoneinfo import ZoneInfo
 
 from notifier import send_alert

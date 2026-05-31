@@ -22,9 +22,14 @@ _BASE_URL  = "https://finnhub.io/api/v1"
 _API_KEY   = os.getenv("FINNHUB_API_KEY", "")
 
 
+# ETFs are often listed under BSE on Finnhub when NSE doesn't return data
+_BSE_ETFS = {"GOLDBEES", "SILVERBEES", "LIQUIDBEES", "CPSEETF", "NETFIT"}
+
 def _sym(symbol: str) -> str:
-    """Convert NSE ticker to Finnhub format: RELIANCE → NSE:RELIANCE"""
-    return f"NSE:{symbol.upper()}"
+    """Convert NSE ticker to Finnhub format. ETFs fall back to BSE prefix."""
+    s = symbol.upper()
+    exchange = "BSE" if s in _BSE_ETFS else "NSE"
+    return f"{exchange}:{s}"
 
 
 def _get(endpoint: str, params: dict) -> dict | None:

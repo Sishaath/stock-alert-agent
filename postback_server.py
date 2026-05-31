@@ -15,6 +15,7 @@ Setup:
 """
 
 import hashlib
+import json
 import logging
 import os
 
@@ -138,7 +139,6 @@ def view_holdings():
     from holdings_manager import load_holdings
     from watchlist_manager import load_watchlist
     from config import DATA_DIR
-    import json, os
 
     holdings  = load_holdings()
     watchlist = load_watchlist()

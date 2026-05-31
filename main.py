@@ -36,6 +36,7 @@ from config import (
     MARKET_OPEN_MINUTE,
     MARKET_CLOSE_HOUR,
     MARKET_CLOSE_MINUTE,
+    DATA_DIR,
 )
 
 logging.basicConfig(
@@ -53,8 +54,7 @@ _fii_dii_last_date: str = ""
 
 
 def _save_price_cache(quotes: dict) -> None:
-    """Save latest quotes to disk so the dashboard can read them without calling NSE."""
-    from config import DATA_DIR
+    """Save latest quotes to disk so the dashboard can read them."""
     cache_file = os.path.join(DATA_DIR, "prices_cache.json")
     try:
         with open(cache_file, "w") as f:
