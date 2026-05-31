@@ -127,6 +127,69 @@ def index():
     return redirect("/holdings")
 
 
+# ─── Kite OAuth Token Renewal ─────────────────────────────────────────────────
+
+@app.route("/kite/renew", methods=["GET"])
+def kite_renew():
+    """
+    Open this URL on your phone to renew the Kite access token.
+    Redirects you to Zerodha login — after login you come back here automatically.
+    """
+    from flask import redirect as flask_redirect
+    from kite_client import kite
+    return flask_redirect(kite.login_url())
+
+
+@app.route("/kite/callback", methods=["GET"])
+def kite_callback():
+    """
+    Zerodha redirects here after login with ?request_token=XXX in the URL.
+    We exchange it for an access token and save it — no manual steps needed.
+    """
+    from kite_client import kite, save_token
+
+    request_token = request.args.get("request_token", "")
+    status        = request.args.get("status", "")
+
+    if status != "success" or not request_token:
+        return (
+            "<html><body style='background:#0f172a;color:#f87171;"
+            "font-family:sans-serif;display:flex;align-items:center;"
+            "justify-content:center;height:100vh;margin:0'>"
+            "<div style='text-align:center'><h2>Login failed or cancelled.</h2>"
+            "<a href='/kite/renew' style='color:#60a5fa'>Try again →</a>"
+            "</div></body></html>"
+        ), 400
+
+    try:
+        session      = kite.generate_session(request_token, api_secret=KITE_API_SECRET)
+        access_token = session["access_token"]
+        save_token(access_token)
+        logger.info("Kite access token renewed via OAuth callback.")
+        return (
+            "<html><body style='background:#0f172a;color:#e2e8f0;"
+            "font-family:sans-serif;display:flex;align-items:center;"
+            "justify-content:center;height:100vh;margin:0'>"
+            "<div style='text-align:center'>"
+            "<h1 style='color:#4ade80;font-size:48px'>✓</h1>"
+            "<h2>Token Renewed</h2>"
+            "<p style='color:#94a3b8'>You're authenticated for today's market session.</p>"
+            "<br><a href='/holdings' style='color:#60a5fa;font-size:18px'>"
+            "Go to Dashboard →</a>"
+            "</div></body></html>"
+        )
+    except Exception as e:
+        logger.error(f"Token exchange failed: {e}")
+        return (
+            f"<html><body style='background:#0f172a;color:#f87171;"
+            f"font-family:sans-serif;display:flex;align-items:center;"
+            f"justify-content:center;height:100vh;margin:0'>"
+            f"<div style='text-align:center'><h2>Error: {e}</h2>"
+            f"<a href='/kite/renew' style='color:#60a5fa'>Try again →</a>"
+            f"</div></body></html>"
+        ), 500
+
+
 @app.route("/health", methods=["GET"])
 def health():
     """Health check endpoint — Railway uses this to verify the service is running."""

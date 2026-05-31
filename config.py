@@ -14,9 +14,12 @@ NTFY_URL   = f"https://ntfy.sh/{NTFY_TOPIC}"
 # ─── Finnhub API ──────────────────────────────────────────────────────────────
 FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "")
 
-# ─── Kite postback validation ─────────────────────────────────────────────────
-# Used only to verify postbacks are genuinely from Zerodha — no API calls made
+# ─── Kite Connect ─────────────────────────────────────────────────────────────
+KITE_API_KEY    = os.getenv("KITE_API_KEY",    "")
 KITE_API_SECRET = os.getenv("KITE_API_SECRET", "")
+KITE_USER_ID    = os.getenv("KITE_USER_ID",    "")
+KITE_PASSWORD   = os.getenv("KITE_PASSWORD",   "")
+KITE_TOTP_SECRET = os.getenv("KITE_TOTP_SECRET", "")
 
 # ─── Alert Thresholds ─────────────────────────────────────────────────────────
 HOLDINGS_DROP_THRESHOLD  = 20    # % below your average buy price

@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo
 
 import schedule
 
+import kite_client
 import market_data
 import scrapers
 from alerts import (
@@ -48,9 +49,11 @@ logger = logging.getLogger("main")
 IST    = ZoneInfo("Asia/Kolkata")
 
 # ─── Daily volume cache ───────────────────────────────────────────────────────
-_daily_cache: dict      = {}   # { symbol: { week_high_52, avg_volume } }
-_cache_date: str        = ""
-_fii_dii_last_date: str = ""
+_daily_cache: dict        = {}
+_cache_date: str          = ""
+_fii_dii_last_date: str   = ""
+_auto_login_date: str     = ""
+RAILWAY_URL = os.getenv("RAILWAY_URL", "https://web-production-009fd.up.railway.app")
 
 
 def _save_price_cache(quotes: dict) -> None:
@@ -75,21 +78,25 @@ def is_market_open() -> bool:
     return open_ <= now <= close_
 
 
-def refresh_daily_cache(all_symbols: list[str]) -> None:
-    """Fetch 52-week high and 30-day avg volume for all symbols once per day."""
+def refresh_daily_cache(quotes: dict) -> None:
+    """
+    Build daily cache of 30-day avg volumes using instrument tokens from quotes.
+    52-week high comes directly from kite.quote() so no separate fetch needed.
+    """
     global _daily_cache, _cache_date
     today = str(datetime.now(IST).date())
     if _cache_date == today and _daily_cache:
         return
-    logger.info(f"Refreshing daily cache (52W high + avg volume) for {len(all_symbols)} symbols...")
+    logger.info("Refreshing 30-day avg volume cache...")
     cache = {}
-    for symbol in all_symbols:
-        high, avg_vol = market_data.get_52week_high_and_avg_volume(symbol)
-        cache[symbol] = {"week_high_52": high, "avg_volume": avg_vol}
-        time.sleep(0.3)
+    for symbol, quote in quotes.items():
+        token   = quote.get("instrument_token")
+        avg_vol = kite_client.get_30day_avg_volume(token)
+        cache[symbol] = {"avg_volume": avg_vol}
+        time.sleep(0.2)
     _daily_cache = cache
     _cache_date  = today
-    logger.info(f"Daily cache ready: {len(cache)} symbols.")
+    logger.info(f"Volume cache ready: {len(cache)} symbols.")
 
 
 # ─── Task 1: Market checks every 5 minutes ───────────────────────────────────
@@ -111,19 +118,19 @@ def run_market_checks() -> None:
         logger.warning("Holdings and watchlist are both empty — nothing to monitor.")
         return
 
-    refresh_daily_cache(all_symbols)
-
-    quotes = market_data.get_quotes(all_symbols)
+    quotes = kite_client.get_quotes(all_symbols)
     if not quotes:
-        logger.error("No quotes returned from Finnhub — skipping this cycle.")
+        logger.error("No quotes from Kite — token may be expired. Check /kite/renew.")
+        send_alert(
+            f"Kite token expired — no price data\n"
+            f"Tap to renew: {RAILWAY_URL}/kite/renew",
+            priority="urgent",
+        )
         return
 
-    # Merge 52-week high from daily cache into each quote
-    for symbol, quote in quotes.items():
-        if symbol in _daily_cache:
-            quote["week_high_52"] = _daily_cache[symbol]["week_high_52"]
+    refresh_daily_cache(quotes)
 
-    # Build avg_volumes dict for volume spike check
+    # avg_volumes for volume spike check
     avg_volumes = {
         sym: data["avg_volume"]
         for sym, data in _daily_cache.items()
@@ -141,6 +148,34 @@ def run_market_checks() -> None:
 
 
 # ─── Task 2: FII/DII once daily at ~9:00 AM IST ──────────────────────────────
+
+def run_auto_login() -> None:
+    """
+    Automatically log in to Zerodha at 6:05 AM IST every weekday.
+    Uses stored credentials + auto-generated TOTP. No human input needed.
+    """
+    global _auto_login_date
+    now   = datetime.now(IST)
+    today = str(now.date())
+
+    if now.weekday() < 5 and now.hour == 6 and now.minute < 10 and _auto_login_date != today:
+        logger.info("── Auto-login ─────────────────────────────────────────")
+        try:
+            kite_client.auto_login()
+            _auto_login_date = today
+            send_alert(
+                "Kite token auto-renewed. Ready for today's market session.",
+                priority="low",
+            )
+            logger.info("── Auto-login successful ──────────────────────────")
+        except Exception as e:
+            logger.error(f"Auto-login failed: {e}")
+            send_alert(
+                f"Auto-login FAILED: {e}\n"
+                f"Manual fallback: {RAILWAY_URL}/kite/renew",
+                priority="urgent",
+            )
+
 
 def maybe_run_fii_dii() -> None:
     global _fii_dii_last_date
@@ -180,6 +215,9 @@ def main() -> None:
     server_thread.start()
     logger.info("Postback server started in background thread.")
 
+    # Load saved Kite token
+    kite_client.init_token()
+
     holdings  = load_holdings()
     watchlist = load_watchlist()
     logger.info(f"Holdings : {[h['symbol'] for h in holdings]}")
@@ -193,6 +231,7 @@ def main() -> None:
         priority="low",
     )
 
+    schedule.every(5).minutes.do(run_auto_login)
     schedule.every(5).minutes.do(run_market_checks)
     schedule.every(5).minutes.do(maybe_run_fii_dii)
     schedule.every(30).minutes.do(run_sebi_check)
