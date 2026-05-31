@@ -50,6 +50,7 @@ SEBI_PRESS_RELEASES_URL = "https://www.sebi.gov.in/media/press-releases.html"
 # Locally  : files live in the current directory (default ".")
 # Railway  : set DATA_DIR=/data and attach a Volume mounted at /data
 DATA_DIR = os.getenv("DATA_DIR", ".")
+os.makedirs(DATA_DIR, exist_ok=True)  # create /data if it doesn't exist yet
 
 # ─── File Paths ───────────────────────────────────────────────────────────────
 HOLDINGS_FILE   = os.path.join(DATA_DIR, "holdings.json")
