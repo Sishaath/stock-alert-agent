@@ -111,7 +111,7 @@ def auto_login() -> str:
 
     # Step 2: Submit TOTP (auto-generated, no manual input)
     totp_code = pyotp.TOTP(KITE_TOTP_SECRET).now()
-    resp = session.post(
+    twofa = session.post(
         "https://kite.zerodha.com/api/twofa",
         data={
             "user_id":      KITE_USER_ID,
@@ -121,21 +121,35 @@ def auto_login() -> str:
             "skip_session": "",
         },
         timeout=15,
-        allow_redirects=False,  # Capture redirect without following it
     )
+    twofa.raise_for_status()
+    logger.info("TOTP step passed.")
 
-    # Step 3: Parse request_token from redirect Location header
-    location      = resp.headers.get("Location", "")
-    params        = parse_qs(urlparse(location).query)
-    request_token = params.get("request_token", [None])[0]
+    # Step 3: Now that the session is authenticated, re-request the Kite Connect
+    # login URL. Zerodha redirects to our redirect_url with ?request_token=XXX.
+    # We parse the token out of the redirect Location header.
+    request_token = None
+    try:
+        auth = session.get(kite.login_url(), timeout=15, allow_redirects=False)
+        location = auth.headers.get("Location", "")
+        # The redirect may chain — follow up to 5 hops looking for request_token
+        hops = 0
+        while location and "request_token" not in location and hops < 5:
+            nxt = session.get(location, timeout=15, allow_redirects=False)
+            location = nxt.headers.get("Location", "")
+            hops += 1
+        params        = parse_qs(urlparse(location).query)
+        request_token = params.get("request_token", [None])[0]
+    except Exception as e:
+        logger.warning(f"Redirect parse note: {e}")
 
     if not request_token:
         raise Exception(
-            f"Could not find request_token in redirect. "
-            f"Location header: '{location}'"
+            "Could not extract request_token after TOTP. "
+            "Check that the Kite app's Redirect URL is set (e.g. https://127.0.0.1)."
         )
 
-    logger.info("TOTP step passed. Exchanging token...")
+    logger.info("Got request_token. Exchanging for access_token...")
 
     # Step 4: Exchange request_token for access_token
     session_data = kite.generate_session(
