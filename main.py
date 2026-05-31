@@ -215,8 +215,19 @@ def main() -> None:
     server_thread.start()
     logger.info("Postback server started in background thread.")
 
-    # Load saved Kite token
-    kite_client.init_token()
+    # Load saved token — if none exists, login immediately
+    if not kite_client.init_token():
+        logger.info("No saved token — running auto-login now...")
+        try:
+            kite_client.auto_login()
+            logger.info("Startup auto-login successful.")
+        except Exception as e:
+            logger.error(f"Startup auto-login failed: {e}")
+            send_alert(
+                f"Auto-login failed on startup: {e}\n"
+                f"Manual fallback: {RAILWAY_URL}/kite/renew",
+                priority="urgent",
+            )
 
     holdings  = load_holdings()
     watchlist = load_watchlist()
