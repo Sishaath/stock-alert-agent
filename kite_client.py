@@ -14,7 +14,6 @@ from datetime import datetime, timedelta
 from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo
 
-import pandas as pd
 import pyotp
 import requests as req_lib
 from kiteconnect import KiteConnect, KiteException
@@ -195,8 +194,11 @@ def get_30day_avg_volume(instrument_token: int) -> float | None:
         )
         if not history:
             return None
-        df = pd.DataFrame(history)
-        return round(df["volume"].tail(30).mean(), 0)
+        # Average the volume of the last 30 candles (plain Python, no pandas)
+        volumes = [row["volume"] for row in history[-30:] if row.get("volume")]
+        if not volumes:
+            return None
+        return round(sum(volumes) / len(volumes), 0)
     except Exception as e:
         logger.error(f"Historical data error for token {instrument_token}: {e}")
         return None

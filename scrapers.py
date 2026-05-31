@@ -245,7 +245,7 @@ def get_sebi_press_releases() -> list[dict]:
         return []
 
     try:
-        soup    = BeautifulSoup(resp.text, "lxml")
+        soup    = BeautifulSoup(resp.text, "html.parser")
         results = []
 
         # SEBI's press releases page lists items in a table
