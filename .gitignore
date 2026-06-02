@@ -1,8 +1,10 @@
 # Environment variables — never commit this
 .env
 
-# Alert log resets on each deploy anyway — no need to track it
+# Runtime data — lives on Railway volume, not in git
 alerts_log.json
+holdings.json
+watchlist.json
 
 # Python bytecode
 __pycache__/
