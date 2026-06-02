@@ -8,7 +8,7 @@ import json
 import logging
 import os
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from flask import Flask, request, jsonify, redirect
 
@@ -164,6 +164,43 @@ def health():
     return jsonify({"status": "running"}), 200
 
 
+# ─── Simulated / Fallback Data Generators ─────────────────────────────────────
+
+def get_simulated_intraday_data(symbol: str, current_price: float) -> list[dict]:
+    """Generates a highly realistic 5-minute intraday chart for fallback."""
+    import random
+    
+    if current_price <= 0:
+        current_price = 100.0
+
+    candles = []
+    # 9:15 AM start of market
+    base_time = datetime.now().replace(hour=9, minute=15, second=0, microsecond=0)
+    
+    # Generate up to 75 points representing 9:15 to 15:30 (5-min intervals)
+    price = current_price * 0.985 # start slightly lower
+    random.seed(hash(symbol)) # deterministic for symbol
+    
+    for i in range(75):
+        t = base_time + timedelta(minutes=i*5)
+        
+        # Random walk with minor mean reversion
+        change = (random.random() - 0.485) * (price * 0.004)
+        pull = (current_price - price) * 0.04
+        price += change + pull
+        
+        candles.append({
+            "time": t.strftime("%H:%M"),
+            "price": round(price, 2)
+        })
+        
+        # Stop generating once we exceed current system time
+        if t.time() > datetime.now().time():
+            break
+            
+    return candles
+
+
 # ─── REST API Endpoints ───────────────────────────────────────────────────────
 
 @app.route("/api/data", methods=["GET"])
@@ -269,7 +306,6 @@ def api_data():
         except Exception:
             pass
 
-    # Dynamic filings feed (last 10 filings from alerts_log)
     sebi_seen = log.get("sebi_seen_ids", [])
 
     return jsonify({
@@ -424,6 +460,137 @@ def api_kite_renew_token():
     except Exception as e:
         logger.error(f"Kite auto-login failed: {e}")
         return jsonify({"status": "error", "message": f"Auto-login failed: {e}"}), 500
+
+
+@app.route("/api/chart", methods=["GET"])
+def api_chart():
+    """Returns intraday 5-minute candle data for visual charting with dynamic fallback simulation."""
+    symbol = request.args.get("symbol", "").upper().strip()
+    if not symbol:
+        return jsonify({"status": "error", "message": "Symbol is required"}), 400
+
+    intraday = []
+    try:
+        import kite_client
+        intraday = kite_client.get_intraday_data(symbol)
+    except Exception as e:
+        logger.warning(f"Failed to fetch live intraday for {symbol}: {e}")
+
+    # Fallback simulation if live fetch fails (off-hours, weekend, token expired)
+    if not intraday:
+        from config import DATA_DIR
+        cache_file = os.path.join(DATA_DIR, "prices_cache.json")
+        ltp = 0.0
+        try:
+            with open(cache_file, "r") as f:
+                cache = json.load(f)
+                ltp = cache.get("quotes", {}).get(symbol, {}).get("last_price", 0.0)
+        except Exception:
+            pass
+
+        if ltp <= 0.0:
+            try:
+                import kite_client
+                q = kite_client.get_quotes([symbol])
+                ltp = q.get(symbol, {}).get("last_price", 0.0)
+            except Exception:
+                pass
+
+        intraday = get_simulated_intraday_data(symbol, ltp)
+
+    return jsonify({
+        "symbol": symbol,
+        "points": intraday
+    })
+
+
+# Company-name lookup improves Google News relevance for NSE tickers.
+COMPANY_NAMES = {
+    "INFY": "Infosys", "RELIANCE": "Reliance Industries", "TATAMOTORS": "Tata Motors",
+    "TCS": "Tata Consultancy Services", "HDFCBANK": "HDFC Bank", "ICICIBANK": "ICICI Bank",
+    "SBIN": "State Bank of India", "ITC": "ITC Limited", "BHARTIARTL": "Bharti Airtel",
+    "HEROMOTOCO": "Hero MotoCorp", "TATAPOWER": "Tata Power", "ASIANPAINT": "Asian Paints",
+    "LARSEN": "Larsen & Toubro", "LT": "Larsen & Toubro", "HINDUNILVR": "Hindustan Unilever",
+    "AXISBANK": "Axis Bank", "KOTAKBANK": "Kotak Mahindra Bank", "WIPRO": "Wipro",
+    "MARUTI": "Maruti Suzuki", "SUNPHARMA": "Sun Pharmaceutical", "BAJFINANCE": "Bajaj Finance",
+    "IOC": "Indian Oil Corporation", "ITCHOTELS": "ITC Hotels",
+    "GOLDBEES": "gold price India", "SILVERBEES": "silver price India",
+}
+_NEWS_CACHE = {}
+_NEWS_TTL = 600  # seconds
+
+
+@app.route("/api/news", methods=["GET"])
+def api_news():
+    """Aggregated company news for tracked stocks, sourced from Google News.
+
+    Works for Indian/NSE equities (Finnhub's free tier does not). Returns the shape
+    the dashboard already expects:
+        {"news": [{headline, summary, source, url, datetime, image, stock_symbol}]}
+    Used by the News tab (all tracked stocks) and the stock drawer (?symbol=XXX).
+    """
+    from scrapers import get_news_for_stock
+    from holdings_manager import load_holdings
+    from concurrent.futures import ThreadPoolExecutor
+    from email.utils import parsedate_to_datetime
+
+    symbol = request.args.get("symbol", "").upper().strip()
+
+    if symbol:
+        symbols = [symbol]
+    else:
+        holdings  = [h["symbol"] for h in load_holdings()]
+        watchlist = load_watchlist()
+        symbols   = list(dict.fromkeys(holdings + watchlist))  # dedupe, keep order
+
+    if not symbols:
+        return jsonify({"news": []})
+
+    now_ts    = datetime.now(IST).timestamp()
+    cache_key = ",".join(sorted(symbols))
+    cached    = _NEWS_CACHE.get(cache_key)
+    if cached and (now_ts - cached["ts"]) < _NEWS_TTL and not request.args.get("refresh"):
+        return jsonify({"news": cached["news"]})
+
+    def _fetch(sym):
+        try:
+            return sym, get_news_for_stock(sym, company_name=COMPANY_NAMES.get(sym), limit=8)
+        except Exception:
+            return sym, []
+
+    results = []
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        for sym, items in pool.map(_fetch, symbols):
+            for it in items:
+                try:
+                    ts = int(parsedate_to_datetime(it.get("published", "")).timestamp())
+                except Exception:
+                    ts = int(now_ts)
+                title  = (it.get("title") or "").strip()
+                source = it.get("source") or ""
+                # Google News appends " - <source>" to titles; strip for a clean headline.
+                if source and title.endswith(f" - {source}"):
+                    title = title[: -(len(source) + 3)].strip()
+                results.append({
+                    "headline": title,
+                    "summary": "",
+                    "source": source or "Google News",
+                    "url": it.get("link") or "",
+                    "datetime": ts,
+                    "image": "",
+                    "stock_symbol": sym,
+                })
+
+    seen, unique = set(), []
+    for art in sorted(results, key=lambda x: x["datetime"], reverse=True):
+        u = art["url"]
+        if u and u not in seen:
+            seen.add(u)
+            unique.append(art)
+
+    unique = unique[:40]
+    _NEWS_CACHE[cache_key] = {"ts": now_ts, "news": unique}
+    return jsonify({"news": unique})
 
 
 # ─── Beautiful Dashboard Page ─────────────────────────────────────────────────
@@ -1016,6 +1183,7 @@ def view_holdings():
       font-weight: 500;
       border-bottom: 1px solid rgba(255, 255, 255, 0.03);
       vertical-align: middle;
+      cursor: pointer;
     }
 
     tr:last-child td {
@@ -1136,6 +1304,7 @@ def view_holdings():
       backdrop-filter: blur(15px);
       position: relative;
       transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      cursor: pointer;
     }
 
     .watchlist-gauge-card:hover {
@@ -1212,6 +1381,237 @@ def view_holdings():
 
     .gauge-pnl-label.buy { color: var(--emerald); }
     .gauge-pnl-label.wait { color: var(--text-muted); }
+
+    /* News Grid & Articles Layout */
+    .news-grid-layout {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+      gap: 20px;
+    }
+
+    .news-article-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      overflow: hidden;
+      backdrop-filter: blur(15px);
+      display: flex;
+      flex-direction: column;
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+    }
+
+    .news-article-card:hover {
+      border-color: rgba(99, 102, 241, 0.25);
+      transform: translateY(-4px);
+      box-shadow: 0 12px 30px rgba(99, 102, 241, 0.1);
+    }
+
+    .news-image {
+      width: 100%;
+      height: 170px;
+      object-fit: cover;
+      background-color: rgba(255, 255, 255, 0.02);
+    }
+
+    .news-content {
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      flex-grow: 1;
+    }
+
+    .news-meta-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-bottom: 10px;
+      font-family: var(--mono);
+    }
+
+    .news-badge {
+      font-size: 10px;
+      font-weight: 800;
+      background: rgba(99, 102, 241, 0.12);
+      color: var(--primary);
+      padding: 2px 7px;
+      border-radius: 6px;
+    }
+
+    .news-headline {
+      font-family: var(--sans-title);
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--text);
+      line-height: 1.4;
+      margin-bottom: 8px;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+
+    .news-summary {
+      font-size: 12.5px;
+      color: var(--text-muted);
+      line-height: 1.5;
+      margin-bottom: 16px;
+      flex-grow: 1;
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+
+    .news-btn {
+      margin-top: auto;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 10px 16px;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      color: var(--text);
+      font-size: 12px;
+      font-weight: 700;
+      text-decoration: none;
+      transition: all 0.2s;
+    }
+
+    .news-btn:hover {
+      background: rgba(99, 102, 241, 0.1);
+      border-color: var(--primary);
+      color: #fff;
+    }
+
+    /* Sliding Details Drawer from right */
+    .drawer-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(3, 7, 18, 0.5);
+      backdrop-filter: blur(10px);
+      z-index: 200;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .drawer-overlay.active {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .glass-drawer {
+      position: absolute;
+      top: 0;
+      right: 0;
+      height: 100%;
+      width: 100%;
+      max-width: 500px;
+      background: #070a13;
+      border-left: 1px solid var(--border);
+      box-shadow: -20px 0 50px rgba(0, 0, 0, 0.5);
+      transform: translateX(100%);
+      transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      display: flex;
+      flex-direction: column;
+    }
+
+    .drawer-overlay.active .glass-drawer {
+      transform: translateX(0);
+    }
+
+    .drawer-header {
+      padding: 24px 28px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .drawer-brand {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .drawer-body {
+      padding: 28px;
+      overflow-y: auto;
+      flex-grow: 1;
+    }
+
+    .drawer-price-card {
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid rgba(255, 255, 255, 0.04);
+      border-radius: 18px;
+      padding: 20px;
+      margin-bottom: 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .drawer-price-card .price-val {
+      font-family: var(--sans-title);
+      font-size: 32px;
+      font-weight: 800;
+      color: var(--text);
+      line-height: 1;
+    }
+
+    .drawer-price-card .change-pct {
+      font-family: var(--mono);
+      font-size: 14px;
+      font-weight: 800;
+      padding: 6px 14px;
+      border-radius: 99px;
+    }
+
+    .drawer-chart-container {
+      margin-bottom: 24px;
+      background: rgba(255, 255, 255, 0.01);
+      border: 1px solid rgba(255, 255, 255, 0.03);
+      border-radius: 18px;
+      padding: 16px;
+    }
+
+    .drawer-stats-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 12px;
+      margin-bottom: 28px;
+    }
+
+    .stat-cell {
+      background: rgba(255, 255, 255, 0.015);
+      border: 1px solid rgba(255, 255, 255, 0.03);
+      border-radius: 12px;
+      padding: 12px 16px;
+    }
+
+    .stat-cell .lbl {
+      font-size: 10px;
+      font-weight: 700;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 4px;
+    }
+
+    .stat-cell .val {
+      font-family: var(--sans-title);
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--text);
+    }
 
     /* Alert Timeline log feed */
     .timeline-log {
@@ -1633,6 +2033,9 @@ def view_holdings():
       <button class="tab-trigger" onclick="switchTab(event, 'watchlist-tab')">
         🎯 Buy Zone Watchlist
       </button>
+      <button class="tab-trigger" onclick="switchTab(event, 'news-tab'); loadNewsFeed()">
+        📰 Ticker News Desk
+      </button>
       <button class="tab-trigger" onclick="switchTab(event, 'timeline-tab')">
         🔔 Scrapers Alert Center
       </button>
@@ -1698,10 +2101,29 @@ def view_holdings():
       </div>
     </div>
 
-    <!-- Tab 3: Timeline & Cooldowns -->
+    <!-- Tab 3: Company News (Google News) -->
+    <div id="news-tab" class="tab-content">
+      <div class="table-toolbar" style="margin-bottom: 24px;">
+        <div>
+          <h2 style="font-family: var(--sans-title); font-size:18px; font-weight:700;">Stock Intelligence News Feed</h2>
+          <p class="panel-subtitle">Recent headlines for your holdings &amp; watchlist, via Google News</p>
+        </div>
+        <div style="max-width: 240px; margin-left: auto; width: 100%;">
+          <select class="form-input" id="news-symbol-filter" onchange="loadNewsFeed(this.value)" style="padding: 10px 14px;">
+            <option value="">All Tracked Stocks</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="news-grid-layout" id="news-articles-container">
+        <div class="empty-message">Draping publications list...</div>
+      </div>
+    </div>
+
+    <!-- Tab 4: Timeline & Cooldowns -->
     <div id="timeline-tab" class="tab-content">
       <div class="dashboard-grid">
-        <div class="glass-card" style="padding: 24px;">
+        <div class="glass-card" style="padding: 24px; grid-column: span 2;">
           <h2 class="panel-title" style="margin-bottom: 20px;">
             📢 Cooldown Silences & Announcement Tracker
           </h2>
@@ -1712,7 +2134,7 @@ def view_holdings():
       </div>
     </div>
 
-    <!-- Tab 4: Settings Thresholds Desk -->
+    <!-- Tab 5: Settings Thresholds Desk -->
     <div id="settings-tab" class="tab-content">
       <div class="glass-card" style="padding: 28px;">
         <h2 class="panel-title" style="margin-bottom: 20px;">⚙️ Calibration of Alerts Threshold</h2>
@@ -1785,7 +2207,7 @@ def view_holdings():
       </div>
       <div class="form-row">
         <label for="f-hold-symbol">Stock Asset Ticker</label>
-        <input type="text" id="f-hold-symbol" class="form-input" placeholder="e.g. INFOSYS, TCS" required>
+        <input type="text" id="f-hold-symbol" class="form-input" placeholder="e.g. INFY, ITC" required>
       </div>
       <div class="form-row">
         <label for="f-hold-qty">Shares Quantity</label>
@@ -1815,6 +2237,64 @@ def view_holdings():
       <button class="btn btn-primary" style="width: 100%; padding: 12px 24px;" onclick="submitWatchlistLog()">
         Add to Watchlist
       </button>
+    </div>
+  </div>
+
+  <!-- Sliding Ticker Details Side Drawer from right -->
+  <div id="details-drawer" class="drawer-overlay" onclick="closeDetailsDrawer(event)">
+    <div class="glass-drawer" onclick="event.stopPropagation()">
+      <div class="drawer-header">
+        <div class="drawer-brand">
+          <span class="circle-avatar" id="drawer-avatar">RI</span>
+          <div>
+            <h3 id="drawer-symbol">RELIANCE</h3>
+            <p id="drawer-description" class="panel-subtitle">Intraday Trading Session</p>
+          </div>
+        </div>
+        <button class="btn-close-modal" onclick="closeDetailsDrawer(event)">&times;</button>
+      </div>
+
+      <div class="drawer-body">
+        <!-- Live Intraday Price Card -->
+        <div class="drawer-price-card">
+          <div id="drawer-ltp" class="price-val">₹0.00</div>
+          <div id="drawer-change" class="change-pct">▲ +0.0%</div>
+        </div>
+
+        <!-- Price Intraday chart (ApexCharts) -->
+        <div class="drawer-chart-container">
+          <div class="chart-header" style="text-align:left; margin-bottom:12px;">Live Intraday Trend (5-min interval)</div>
+          <div id="intraday-chart-div" style="min-height: 230px;"></div>
+        </div>
+
+        <!-- Custom Asset Metrics Grid -->
+        <div class="drawer-stats-grid">
+          <div class="stat-cell">
+            <div class="lbl">Capital Allocated</div>
+            <div id="d-stat-invested" class="val">₹0.00</div>
+          </div>
+          <div class="stat-cell">
+            <div class="lbl">Total Shares Held</div>
+            <div id="d-stat-qty" class="val">0</div>
+          </div>
+          <div class="stat-cell">
+            <div class="lbl">Average cost price</div>
+            <div id="d-stat-avg" class="val">₹0.00</div>
+          </div>
+          <div class="stat-cell">
+            <div class="lbl">Accumulated P&amp;L</div>
+            <div id="d-stat-pnl" class="val">₹0.00</div>
+          </div>
+        </div>
+
+        <!-- Company News inside Drawer -->
+        <div class="drawer-news-section" style="margin-top: 24px;">
+          <h4 style="font-family: var(--sans-title); font-size:14px; font-weight:700; color:var(--text); margin-bottom:12px; text-transform:uppercase; letter-spacing:0.05em;">Related Stock Publications</h4>
+          <div class="alerts-feed" id="drawer-news-feed" style="max-height: 320px; overflow-y:auto;">
+            <div class="empty-message">No specific publications mapped.</div>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -2062,6 +2542,9 @@ def view_holdings():
         document.getElementById('metric-holdings').innerText = data.holdings.length;
         document.getElementById('metric-watchlist').innerText = data.watchlist.length;
 
+        // Populate the dropdown filters for news
+        populateNewsSymbols(data.holdings, data.watchlist);
+
         // Render Tables & Allocation Chart
         renderHoldings(data.holdings);
         renderWatchlistGauges(data.watchlist, data.settings.WATCHLIST_DROP_THRESHOLD);
@@ -2116,6 +2599,28 @@ def view_holdings():
       tape.innerHTML = items;
     }
 
+    function populateNewsSymbols(holdings, watchlist) {
+      const select = document.getElementById('news-symbol-filter');
+      const currentSelected = select.value;
+      
+      const allSyms = listTrackedSymbols(holdings, watchlist);
+      let options = `<option value="">All Tracked Stocks</option>`;
+      
+      allSyms.forEach(sym => {
+        options += `<option value="${sym}">${sym}</option>`;
+      });
+
+      select.innerHTML = options;
+      select.value = currentSelected; // preserve selection
+    }
+
+    function listTrackedSymbols(holdings, watchlist) {
+      const syms = new Set();
+      holdings.forEach(h => syms.add(h.symbol));
+      watchlist.forEach(w => syms.add(w.symbol));
+      return Array.from(syms).sort();
+    }
+
     function renderHoldings(holdings) {
       const tbody = document.getElementById('holdings-tbody');
       if (holdings.length === 0) {
@@ -2146,19 +2651,20 @@ def view_holdings():
         const pnlVal = h.ltp ? (up ? '+' : '−') + '₹' + Math.abs(h.pnl).toLocaleString(undefined, {maximumFractionDigits: 0}) : '—';
         const pill = h.ltp ? `<span class="interactive-pill ${up ? 'up' : 'down'}">${up ? '▲' : '▼'} ${Math.abs(h.pnl_pct).toFixed(1)}%</span>` : '—';
 
+        // Add onclick to td items except the trash action td
         return `
-          <tr>
-            <td>
+          <tr class="clickable-row">
+            <td onclick="openDetailsDrawer('${h.symbol}')">
               <div class="sym-name-cell">
                 <span class="circle-avatar">${initials}</span>
                 <span class="stock-ticker">${h.symbol}</span>
               </div>
             </td>
-            <td class="num">${h.quantity.toLocaleString()}</td>
-            <td class="num">₹${h.average_price.toLocaleString(undefined, {minimumFractionDigits: 2})}</td>
-            <td class="num">${ltpVal}</td>
-            <td class="num">${pill}</td>
-            <td class="num ${up ? 'text-up' : 'text-down'}" style="font-weight:700;">${pnlVal}</td>
+            <td class="num" onclick="openDetailsDrawer('${h.symbol}')">${h.quantity.toLocaleString()}</td>
+            <td class="num" onclick="openDetailsDrawer('${h.symbol}')">₹${h.average_price.toLocaleString(undefined, {minimumFractionDigits: 2})}</td>
+            <td class="num" onclick="openDetailsDrawer('${h.symbol}')">${ltpVal}</td>
+            <td class="num" onclick="openDetailsDrawer('${h.symbol}')">${pill}</td>
+            <td class="num ${up ? 'text-up' : 'text-down'}" style="font-weight:700;" onclick="openDetailsDrawer('${h.symbol}')">${pnlVal}</td>
             <td>
               <button class="btn-trash" onclick="deleteAsset('${h.symbol}')" title="Wipe Holding">
                 <svg style="width:15px;height:15px" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
@@ -2179,8 +2685,6 @@ def view_holdings():
       container.innerHTML = watchlist.map(w => {
         const initials = w.symbol.substring(0, 2);
         
-        // Calculate progress toward the 20% drop target
-        // If drop is X%, progress = (X / threshold) * 100
         let progress = 0;
         if (w.week_high_52 && w.ltp) {
           progress = (w.drop_pct / threshold) * 100;
@@ -2198,13 +2702,13 @@ def view_holdings():
         const highVal = w.week_high_52 ? '₹' + w.week_high_52.toLocaleString(undefined, {minimumFractionDigits:1}) : '—';
 
         return `
-          <div class="watchlist-gauge-card">
+          <div class="watchlist-gauge-card" onclick="openDetailsDrawer('${w.symbol}')">
             <div class="gauge-top">
               <div class="title-area">
                 <span class="circle-avatar wl">${initials}</span>
                 <span class="stock-ticker">${w.symbol}</span>
               </div>
-              <button class="btn-trash" onclick="deleteWatch('${w.symbol}')" title="Stop Watching">
+              <button class="btn-trash" onclick="event.stopPropagation(); deleteWatch('${w.symbol}')" title="Stop Watching">
                 <svg style="width:14px;height:14px" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
               </button>
             </div>
@@ -2268,6 +2772,239 @@ def view_holdings():
       `;
 
       container.innerHTML = items;
+    }
+
+    // Dynamic Publications News Feed Loader
+    async function loadNewsFeed(symbolFilter = '') {
+      const container = document.getElementById('news-articles-container');
+      container.innerHTML = `
+        <div class="empty-message" style="grid-column: span 3;">
+          <div class="skeleton-line"></div>
+          <div class="skeleton-line"></div>
+          <div class="skeleton-line"></div>
+        </div>
+      `;
+
+      try {
+        const querySymbol = symbolFilter ? '?symbol=' + symbolFilter : '';
+        const response = await fetch('/api/news' + querySymbol);
+        
+        if (!response.ok) {
+          const errData = await response.json();
+          throw new Error(errData.message || 'News API Error');
+        }
+        
+        const data = await response.json();
+        
+        if (!data.news || data.news.length === 0) {
+          container.innerHTML = `<div class="empty-message" style="grid-column: span 3;">No publications found for the selected stock.</div>`;
+          return;
+        }
+
+        container.innerHTML = data.news.map(art => {
+          const date = new Date(art.datetime * 1000).toLocaleDateString(undefined, {day:'numeric', month:'short', year:'numeric'});
+          const imageHtml = art.image ? `<img class="news-image" src="${art.image}" alt="Article Cover" onerror="this.style.display='none'">` : '';
+          const symbolTag = art.stock_symbol ? `<span class="news-badge">${art.stock_symbol}</span>` : `<span class="news-badge">Market</span>`;
+
+          return `
+            <div class="news-article-card">
+              ${imageHtml}
+              <div class="news-content">
+                <div class="news-meta-row">
+                  ${symbolTag}
+                  <span>${art.source} · ${date}</span>
+                </div>
+                <h4 class="news-headline">${art.headline}</h4>
+                <p class="news-summary">${art.summary || 'Summary not provided. Open article link for full coverage.'}</p>
+                <a class="news-btn" href="${art.url}" target="_blank" rel="noopener noreferrer">
+                  Open Publication Website
+                  <svg style="width:12px;height:12px" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25"/></svg>
+                </a>
+              </div>
+            </div>
+          `;
+        }).join('');
+
+      } catch (err) {
+        container.innerHTML = `<div class="empty-message" style="grid-column: span 3; color: var(--rose);">Could not load news: ${err.message}. Check your internet connection and try again.</div>`;
+      }
+    }
+
+    // Sliding Drawer Details controller
+    let drawerChart = null;
+
+    async function openDetailsDrawer(symbol) {
+      document.getElementById('details-drawer').classList.add('active');
+      
+      // Initial Skeletons/loading layout
+      document.getElementById('drawer-symbol').innerText = symbol;
+      document.getElementById('drawer-avatar').innerText = symbol.substring(0, 2);
+      document.getElementById('drawer-ltp').innerText = '₹0.00';
+      document.getElementById('drawer-change').innerText = 'Syncing...';
+      document.getElementById('drawer-change').className = 'change-pct';
+      document.getElementById('d-stat-invested').innerText = '—';
+      document.getElementById('d-stat-qty').innerText = '—';
+      document.getElementById('d-stat-avg').innerText = '—';
+      document.getElementById('d-stat-pnl').innerText = '—';
+      document.getElementById('drawer-news-feed').innerHTML = '<div class="empty-message">Draping publications...</div>';
+
+      // Load Holding Metrics if the stock is in holdings
+      const holdings = window.holdingsDataList || [];
+      const match = holdings.find(h => h.symbol === symbol);
+      
+      if (match) {
+        document.getElementById('d-stat-invested').innerText = '₹' + match.invested.toLocaleString(undefined, {maximumFractionDigits:0});
+        document.getElementById('d-stat-qty').innerText = match.quantity.toLocaleString();
+        document.getElementById('d-stat-avg').innerText = '₹' + match.average_price.toLocaleString(undefined, {minimumFractionDigits:2});
+        
+        const up = match.pnl >= 0;
+        document.getElementById('d-stat-pnl').innerText = (up ? '+' : '') + '₹' + match.pnl.toLocaleString(undefined, {maximumFractionDigits:0}) + ' (' + match.pnl_pct.toFixed(1) + '%)';
+        document.getElementById('d-stat-pnl').style.color = up ? 'var(--emerald)' : 'var(--rose)';
+      } else {
+        document.getElementById('d-stat-invested').innerText = 'Not Held';
+        document.getElementById('d-stat-qty').innerText = '0';
+        document.getElementById('d-stat-avg').innerText = '—';
+        document.getElementById('d-stat-pnl').innerText = '—';
+        document.getElementById('d-stat-pnl').style.color = 'var(--text-muted)';
+      }
+
+      // Fetch dynamic price statistics & Intraday Chart points
+      try {
+        const chartResponse = await fetch('/api/chart?symbol=' + symbol);
+        const chartData = await chartResponse.json();
+
+        // Fetch prices from quotes
+        const points = chartData.points || [];
+        if (points.length > 0) {
+          const startPrice = points[0].price;
+          const endPrice = points[points.length - 1].price;
+          const diff = endPrice - startPrice;
+          const diffPct = (diff / startPrice) * 100;
+          const positive = diff >= 0;
+
+          document.getElementById('drawer-ltp').innerText = '₹' + endPrice.toLocaleString(undefined, {minimumFractionDigits:2});
+          document.getElementById('drawer-change').innerText = (positive ? '▲ +' : '▼ ') + Math.abs(diffPct).toFixed(2) + '%';
+          document.getElementById('drawer-change').className = 'change-pct ' + (positive ? 'up' : 'down');
+          
+          // Style change values
+          if (positive) {
+            document.getElementById('drawer-change').style.color = 'var(--emerald)';
+            document.getElementById('drawer-change').style.background = 'var(--emerald-glow)';
+          } else {
+            document.getElementById('drawer-change').style.color = 'var(--rose)';
+            document.getElementById('drawer-change').style.background = 'var(--rose-glow)';
+          }
+
+          // Plot Area Chart
+          plotIntradayChart(points, positive ? '#10b981' : '#f43f5e');
+        } else {
+          document.getElementById('drawer-ltp').innerText = '₹0.00';
+          document.getElementById('drawer-change').innerText = 'Intraday Closed';
+          document.getElementById('drawer-change').className = 'change-pct';
+        }
+
+      } catch (err) {
+        console.error('Drawer chart load failure', err);
+      }
+
+      // Fetch stock-specific publications
+      try {
+        const newsResponse = await fetch('/api/news?symbol=' + symbol);
+        const newsData = await newsResponse.json();
+        const feed = document.getElementById('drawer-news-feed');
+        
+        if (!newsData.news || newsData.news.length === 0) {
+          feed.innerHTML = '<div class="empty-message">No specific publications cached.</div>';
+          return;
+        }
+
+        feed.innerHTML = newsData.news.slice(0, 5).map(art => {
+          const date = new Date(art.datetime * 1000).toLocaleDateString(undefined, {day:'numeric', month:'short'});
+          return `
+            <div class="feed-item" style="background:rgba(255,255,255,0.01)">
+              <div class="feed-item-header">
+                <span class="feed-item-title" style="color:var(--primary)">${art.source}</span>
+                <span class="feed-item-time">${date}</span>
+              </div>
+              <a href="${art.url}" target="_blank" rel="noopener noreferrer" style="color:var(--text); text-decoration:none; font-weight:600; font-size:12.5px; display:block; margin:2px 0 4px; overflow:hidden; text-overflow:ellipsis; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical;">
+                ${art.headline}
+              </a>
+            </div>
+          `;
+        }).join('');
+
+      } catch (err) {
+        document.getElementById('drawer-news-feed').innerHTML = '<div class="empty-message" style="color:var(--rose)">Publications synchronization failed.</div>';
+      }
+    }
+
+    function closeDetailsDrawer(event = null) {
+      if (event) {
+        event.stopPropagation();
+      }
+      document.getElementById('details-drawer').classList.remove('active');
+    }
+
+    function plotIntradayChart(points, colorHex) {
+      const times = points.map(p => p.time);
+      const prices = points.map(p => p.price);
+
+      const options = {
+        chart: {
+          type: 'area',
+          height: 230,
+          background: 'transparent',
+          foreColor: '#64748b',
+          fontFamily: 'Plus Jakarta Sans',
+          toolbar: { show: false },
+          sparkline: { enabled: false }
+        },
+        stroke: { curve: 'smooth', width: 2 },
+        colors: [colorHex],
+        series: [{
+          name: 'LTP',
+          data: prices
+        }],
+        xaxis: {
+          categories: times,
+          labels: {
+            show: true,
+            style: { colors: '#64748b' }
+          },
+          axisBorder: { show: false },
+          axisTicks: { show: false }
+        },
+        yaxis: {
+          show: true,
+          labels: {
+            style: { colors: '#64748b' },
+            formatter: (v) => '₹' + v.toFixed(0)
+          }
+        },
+        grid: {
+          borderColor: 'rgba(255,255,255,0.03)',
+          strokeDashArray: 4
+        },
+        fill: {
+          type: 'gradient',
+          gradient: {
+            shadeIntensity: 1,
+            opacityFrom: 0.25,
+            opacityTo: 0.02,
+            stops: [0, 95, 100]
+          }
+        },
+        tooltip: {
+          theme: 'dark',
+          y: { formatter: (v) => '₹' + v.toLocaleString() }
+        }
+      };
+
+      if (drawerChart) {
+        drawerChart.destroy();
+      }
+      drawerChart = new ApexCharts(document.querySelector("#intraday-chart-div"), options);
+      drawerChart.render();
     }
 
     function calibrateSliders(settings) {

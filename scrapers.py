@@ -289,3 +289,60 @@ def get_sebi_press_releases() -> list[dict]:
     except Exception as e:
         logger.error(f"Failed to parse SEBI press releases page: {e}")
         return []
+# ─── Company News (Google News RSS) ───────────────────────────────────────────
+
+def get_news_for_stock(symbol: str, company_name: str = None, limit: int = 8) -> list[dict]:
+    """Fetch recent published news articles for a company from Google News RSS.
+
+    Works for Indian / NSE-listed companies and needs no API key. The query uses
+    the company name when provided (better relevance than a bare ticker).
+
+    Args:
+        symbol:       NSE ticker, e.g. "RELIANCE".
+        company_name: Optional full name, e.g. "Reliance Industries".
+        limit:        Max number of articles to return.
+
+    Returns a list of dicts: {title, link, source, published}.
+    Network or parse failures return an empty list (never raises).
+    """
+    import xml.etree.ElementTree as ET
+    from urllib.parse import quote_plus
+
+    query = f"{company_name} share price" if company_name else f"{symbol} stock NSE"
+    url = (
+        "https://news.google.com/rss/search?q="
+        + quote_plus(query)
+        + "&hl=en-IN&gl=IN&ceid=IN:en"
+    )
+
+    try:
+        resp = requests.get(url, headers={"User-Agent": NSE_HEADERS["User-Agent"]}, timeout=8)
+        resp.raise_for_status()
+        root = ET.fromstring(resp.content)
+    except (requests.RequestException, ET.ParseError) as e:
+        logger.warning(f"Could not fetch Google News for {symbol}: {e}")
+        return []
+
+    items = []
+    for item in root.iter("item"):
+        title = (item.findtext("title") or "").strip()
+        link = (item.findtext("link") or "").strip()
+        pub = (item.findtext("pubDate") or "").strip()
+        src_el = item.find("source")
+        source = (src_el.text or "").strip() if src_el is not None else ""
+        # Google appends " - <source>" to titles; strip it for a clean headline.
+        if source and title.endswith(f" - {source}"):
+            title = title[: -(len(source) + 3)].strip()
+        if not title:
+            continue
+        items.append({
+            "title": title,
+            "link": link,
+            "source": source,
+            "published": pub,
+        })
+        if len(items) >= limit:
+            break
+
+    logger.debug(f"Fetched {len(items)} Google News articles for {symbol}.")
+    return items
