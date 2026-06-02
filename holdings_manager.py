@@ -56,6 +56,26 @@ def _save_holdings(holdings: list[dict]) -> None:
         json.dump(holdings, f, indent=2)
 
 
+def sync_from_kite() -> bool:
+    """
+    Overwrite holdings.json with live data from Zerodha.
+
+    This is the ground truth — covers buys/sells made while the service was
+    down (missed postbacks), app restarts, or manual trades.
+    Returns True on success.
+    """
+    try:
+        import kite_client
+        holdings = kite_client.fetch_holdings_from_zerodha()
+        with _lock:
+            _save_holdings(holdings)
+        logger.info(f"Holdings synced from Kite: {[h['symbol'] for h in holdings]}")
+        return True
+    except Exception as e:
+        logger.error(f"Holdings sync from Kite failed: {e}")
+        return False
+
+
 def process_trade(
     symbol: str,
     transaction_type: str,

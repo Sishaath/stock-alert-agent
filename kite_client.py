@@ -189,6 +189,34 @@ def auto_login() -> str:
     return access_token
 
 
+# ─── Portfolio Sync ───────────────────────────────────────────────────────────
+
+def fetch_holdings_from_zerodha() -> list[dict]:
+    """
+    Fetch the actual current portfolio from Zerodha via kite.holdings().
+
+    Includes both settled quantity and T1 (recently bought, not yet in demat)
+    so a stock bought today is immediately reflected.
+
+    Returns list of {"symbol", "quantity", "average_price"}.
+    Raises KiteException if token is invalid.
+    """
+    raw = kite.holdings()
+    holdings = []
+    for h in raw:
+        symbol = (h.get("tradingsymbol") or "").upper().strip()
+        qty    = (h.get("quantity") or 0) + (h.get("t1_quantity") or 0)
+        avg    = h.get("average_price") or 0
+        if symbol and qty > 0 and avg > 0:
+            holdings.append({
+                "symbol":        symbol,
+                "quantity":      round(float(qty), 4),
+                "average_price": round(float(avg), 2),
+            })
+    logger.info(f"Fetched {len(holdings)} holdings from Zerodha.")
+    return holdings
+
+
 # ─── Market Data ──────────────────────────────────────────────────────────────
 
 def get_quotes(symbols: list[str], exchange: str = "NSE") -> dict:

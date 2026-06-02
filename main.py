@@ -29,7 +29,7 @@ from alerts import (
     check_sebi_filings_alert,
     check_sebi_press_releases_alert,
 )
-from holdings_manager import load_holdings
+from holdings_manager import load_holdings, sync_from_kite
 from watchlist_manager import load_watchlist
 from notifier import send_alert
 from postback_server import run_server
@@ -54,6 +54,7 @@ _daily_cache: dict        = {}
 _cache_date: str          = ""
 _fii_dii_last_date: str   = ""
 _auto_login_date: str     = ""
+_token_alert_sent_at: datetime | None = None
 RAILWAY_URL = os.getenv("RAILWAY_URL", "https://web-production-009fd.up.railway.app")
 
 
@@ -121,14 +122,20 @@ def run_market_checks() -> None:
 
     quotes = kite_client.get_quotes(all_symbols)
     if not quotes:
+        global _token_alert_sent_at
         logger.error("No quotes from Kite — token may be expired. Check /kite/renew.")
-        send_alert(
-            f"Kite token expired — no price data\n"
-            f"Tap to renew: {RAILWAY_URL}/kite/renew",
-            priority="urgent",
-        )
+        now = datetime.now(IST)
+        # Only alert once per hour to avoid notification spam
+        if _token_alert_sent_at is None or (now - _token_alert_sent_at).total_seconds() > 3600:
+            send_alert(
+                f"Kite token expired — no price data\n"
+                f"Tap to renew: {RAILWAY_URL}/kite/renew",
+                priority="urgent",
+            )
+            _token_alert_sent_at = now
         return
 
+    _token_alert_sent_at = None  # quotes succeeded, reset alert state
     refresh_daily_cache(quotes)
 
     # Merge 52-week high from daily cache into each quote (Kite quote lacks it)
@@ -183,6 +190,23 @@ def run_auto_login() -> None:
             )
 
 
+_holdings_sync_date: str = ""
+
+def run_holdings_sync() -> None:
+    """
+    Sync holdings from Zerodha once daily at 9:15 AM IST (market open).
+    Catches any buys/sells from the previous session or overnight.
+    """
+    global _holdings_sync_date
+    now   = datetime.now(IST)
+    today = str(now.date())
+    if now.weekday() < 5 and now.hour == 9 and now.minute < 20 and _holdings_sync_date != today:
+        logger.info("── Holdings sync ─────────────────────────────────────")
+        if sync_from_kite():
+            _holdings_sync_date = today
+        logger.info("── Holdings sync done ────────────────────────────────")
+
+
 def maybe_run_fii_dii() -> None:
     global _fii_dii_last_date
     now   = datetime.now(IST)
@@ -234,7 +258,7 @@ def main() -> None:
     server_thread.start()
     logger.info("Postback server started in background thread.")
 
-    # Load saved token — if none exists, login immediately
+    # Load saved token — if none exists (or stale), login immediately
     if not kite_client.init_token():
         logger.info("No saved token — running auto-login now...")
         try:
@@ -247,6 +271,11 @@ def main() -> None:
                 f"Manual fallback: {RAILWAY_URL}/kite/renew",
                 priority="urgent",
             )
+
+    # Sync holdings from Zerodha at every startup — catches any trades
+    # made while the service was down (missed postbacks, restarts, etc.)
+    logger.info("Syncing holdings from Zerodha...")
+    sync_from_kite()
 
     holdings  = load_holdings()
     watchlist = load_watchlist()
@@ -262,6 +291,7 @@ def main() -> None:
     )
 
     schedule.every(5).minutes.do(run_auto_login)
+    schedule.every(5).minutes.do(run_holdings_sync)
     schedule.every(5).minutes.do(run_market_checks)
     schedule.every(5).minutes.do(maybe_run_fii_dii)
     schedule.every(30).minutes.do(run_sebi_check)
