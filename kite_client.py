@@ -56,14 +56,41 @@ def save_token(access_token: str) -> None:
 
 
 def init_token() -> bool:
-    """Load saved token at startup. Returns True if token loaded."""
-    token = load_token()
-    if token:
-        kite.set_access_token(token)
-        logger.info("Kite token loaded from file.")
-        return True
-    logger.warning("No saved token found — auto-login will run at 6 AM.")
-    return False
+    """Load saved token at startup. Returns True only if token is from today's Kite session.
+
+    Kite tokens expire at 6 AM IST daily. A token saved before today's 6 AM is stale
+    even if the file exists — returning False triggers an immediate auto-login on startup.
+    """
+    try:
+        with open(TOKEN_FILE) as f:
+            data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        logger.warning("No saved token found — auto-login will run now.")
+        return False
+
+    token       = data.get("access_token")
+    saved_at_str = data.get("saved_at")
+
+    if not token:
+        logger.warning("Token file exists but contains no access_token.")
+        return False
+
+    # Validate that the token was issued after today's 6 AM IST cutoff
+    try:
+        saved_at  = datetime.fromisoformat(saved_at_str)
+        today_6am = datetime.now(IST).replace(hour=6, minute=0, second=0, microsecond=0)
+        if saved_at < today_6am:
+            logger.warning(
+                f"Saved token is from {saved_at.strftime('%Y-%m-%d %H:%M IST')} — "
+                "before today's 6 AM cutoff. Running auto-login now."
+            )
+            return False
+    except Exception:
+        pass  # If saved_at can't be parsed, load the token and let the API fail naturally
+
+    kite.set_access_token(token)
+    logger.info(f"Kite token loaded from file (saved at {saved_at_str}).")
+    return True
 
 
 # ─── Automated Login ──────────────────────────────────────────────────────────
@@ -227,3 +254,53 @@ def get_daily_stats(instrument_token: int) -> tuple[float, float | None]:
     except Exception as e:
         logger.error(f"Historical data error for token {instrument_token}: {e}")
         return 0.0, None
+
+
+def get_intraday_data(symbol: str, exchange: str = "NSE") -> list[dict]:
+    """
+    Fetch today's intraday candle data (5-minute interval) from Kite Connect.
+    If it's the weekend or off-hours, fetches candles for the previous active trading day.
+    """
+    try:
+        # Resolve instrument token
+        q = get_quotes([symbol], exchange)
+        token = q.get(symbol, {}).get("instrument_token")
+        if not token:
+            return []
+
+        to_date = datetime.now(IST)
+        # 9:15 AM IST start of market
+        from_date = to_date.replace(hour=9, minute=15, second=0, microsecond=0)
+
+        # Handle weekend or off-hours fallback
+        if to_date.weekday() >= 5 or to_date.hour < 9 or (to_date.hour == 9 and to_date.minute < 15):
+            days_to_subtract = 1
+            if to_date.weekday() == 5:    # Saturday
+                days_to_subtract = 1
+            elif to_date.weekday() == 6:  # Sunday
+                days_to_subtract = 2
+            elif to_date.weekday() == 0 and to_date.hour < 9: # Monday morning before market
+                days_to_subtract = 3
+            else:
+                days_to_subtract = 1
+
+            from_date = (to_date - timedelta(days=days_to_subtract)).replace(hour=9, minute=15, second=0, microsecond=0)
+            to_date = from_date.replace(hour=15, minute=30, second=0, microsecond=0)
+
+        history = kite.historical_data(
+            instrument_token=token,
+            from_date=from_date.strftime("%Y-%m-%d %H:%M:%S"),
+            to_date=to_date.strftime("%Y-%m-%d %H:%M:%S"),
+            interval="5minute",
+        )
+
+        return [
+            {
+                "time": row["date"].astimezone(IST).strftime("%H:%M"),
+                "price": round(float(row["close"]), 2)
+            }
+            for row in history
+        ]
+    except Exception as e:
+        logger.error(f"Error fetching intraday historical data for {symbol}: {e}")
+        return []
