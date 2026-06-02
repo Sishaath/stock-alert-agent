@@ -1,105 +1,78 @@
 # Stock Market Alert Agent
 
-A Python agent that monitors Indian stock markets and sends push notifications to your phone via [ntfy.sh](https://ntfy.sh). Designed for Zerodha users.
+A Python agent that monitors your Indian stock portfolio and sends push notifications to your phone via [ntfy.sh](https://ntfy.sh). Designed for Zerodha users. Runs 24/7 on [Railway](https://railway.app).
 
-## What It Monitors
+## Features
 
-| Alert | Trigger | Schedule |
-|-------|---------|----------|
-| **Holdings drop** | Any holding falls 20%+ below your avg buy price | Every 5 min (market hours) |
-| **Watchlist drop** | Any watchlist stock falls 20%+ from its 52-week high | Every 5 min (market hours) |
-| **Volume spike** | Any stock has 3x+ today's volume vs 30-day average | Every 5 min (market hours) |
-| **FII/DII flow** | Net FII or DII cash flow exceeds ₹3,000 Cr | Once daily at 9:00 AM IST |
-| **SEBI / NSE filings** | New corporate announcement for any tracked stock | Every 30 min |
+| Feature | Details |
+|---------|---------|
+| **Price drop alerts** | Holdings fall 20%+ below avg buy price · Watchlist stocks fall 20%+ from 52-week high |
+| **Volume spike alerts** | Any stock has 3x+ today's volume vs 30-day average |
+| **FII/DII flow alerts** | Net FII or DII cash flow exceeds ₹3,000 Cr |
+| **SEBI / NSE filings** | New corporate announcements for any tracked stock |
+| **Live dashboard** | Web dashboard at `/holdings` with P&L, charts, watchlist management |
+| **Fully automated login** | Kite token auto-renewed daily at 6 AM IST via stored credentials + TOTP |
+| **Auto portfolio sync** | Holdings synced from Zerodha on every startup and daily at 9:15 AM — buys/sells always reflected automatically |
 
 Market hour checks run **9:15 AM – 3:30 PM IST, Monday–Friday only**.  
 Duplicate alerts are suppressed for **4 hours** per stock per alert type.
 
 ---
 
+## How Holdings Stay in Sync
+
+Holdings are sourced directly from `kite.holdings()` (Zerodha's API) on every service startup and daily at market open. You **never need to manually add or remove stocks** — buy or sell on Zerodha and the dashboard reflects it automatically. Zerodha postbacks provide additional real-time updates during the day.
+
+---
+
 ## Prerequisites
 
 - **Python 3.11+**
-- A **Zerodha Kite** account with API access (₹2,000/month subscription at [kite.trade](https://kite.trade))
+- A **Zerodha Kite** account with API access (₹2,000/month at [kite.trade](https://kite.trade))
 - The **ntfy app** on your phone ([iOS](https://apps.apple.com/app/ntfy/id1625396347) | [Android](https://play.google.com/store/apps/details?id=io.heckel.ntfy)) subscribed to `my_stock_alerts`
 
 ---
 
 ## Local Setup
 
-### 1. Clone / download the project
+### 1. Clone and install
 
 ```bash
 git clone <your-repo-url>
 cd stock_alert_agent
-```
-
-### 2. Create a virtual environment and install dependencies
-
-```bash
 python3 -m venv venv
-source venv/bin/activate      # macOS / Linux
-# venv\Scripts\activate       # Windows
-
+source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 3. Fill in your credentials
-
-Edit `.env`:
+### 2. Create a `.env` file
 
 ```env
-KITE_API_KEY=your_api_key_here
-KITE_API_SECRET=your_api_secret_here
-KITE_ACCESS_TOKEN=           # Leave blank for now — see Step 4
+KITE_API_KEY=your_api_key
+KITE_API_SECRET=your_api_secret
+KITE_USER_ID=your_zerodha_user_id
+KITE_PASSWORD=your_zerodha_password
+KITE_TOTP_SECRET=your_totp_secret_key
 NTFY_TOPIC=my_stock_alerts
+DATA_DIR=./data
 ```
 
-Get your API key and secret from [developers.kite.trade](https://developers.kite.trade) → **Your Apps**.
+Get your API credentials from [developers.kite.trade](https://developers.kite.trade) → **Your Apps**.  
+`KITE_TOTP_SECRET` is the base32 secret shown when you set up TOTP 2FA on your Zerodha account (the raw key, not the QR code).
 
-### 4. Generate your first access token
+> **Important:** `.env` is in `.gitignore` — your credentials will NOT be pushed to GitHub.
 
-The Kite access token **expires every day at 6:00 AM IST**. Run this each morning before market open:
-
-```bash
-python generate_token.py
-```
-
-Follow the prompts — it will open a browser login and save the token to your `.env` automatically.
-
-### 5. Edit your watchlist
-
-Open `watchlist.json` and add/remove stocks as needed:
-
-```json
-["RELIANCE", "TCS", "INFY", "HDFCBANK", "WIPRO"]
-```
-
-You can edit this file at any time — the agent picks up changes on the next check.
-
-### 6. Run the agent
+### 3. Run the agent
 
 ```bash
 python main.py
 ```
 
-You'll receive a startup notification on your phone confirming everything works.
+On first run, the agent logs in automatically, syncs your portfolio, and sends a startup notification to your phone.
 
 ---
 
-## Subscribe to Alerts on Your Phone
-
-1. Install the **ntfy** app ([iOS](https://apps.apple.com/app/ntfy/id1625396347) | [Android](https://play.google.com/store/apps/details?id=io.heckel.ntfy))
-2. Tap **+** → enter topic: `my_stock_alerts`
-3. Done — notifications will appear instantly
-
-You can also view alerts in a browser at: `https://ntfy.sh/my_stock_alerts`
-
----
-
-## Deploy to Railway (Always-On, Free)
-
-Railway runs your agent 24/7 so you don't need your laptop open.
+## Deploy to Railway (Always-On)
 
 ### Step 1 — Push to GitHub
 
@@ -111,46 +84,72 @@ git remote add origin https://github.com/your-username/stock-alert-agent.git
 git push -u origin main
 ```
 
-> **Important:** `.env` is in `.gitignore` — your credentials will NOT be pushed to GitHub.
-
 ### Step 2 — Create a Railway project
 
-1. Go to [railway.app](https://railway.app) and sign in with GitHub
-2. Click **New Project → Deploy from GitHub repo**
-3. Select your `stock-alert-agent` repository
-4. Railway detects the `Procfile` and starts a **worker** service automatically
+1. Go to [railway.app](https://railway.app) → **New Project → Deploy from GitHub repo**
+2. Select your `stock-alert-agent` repository
+3. Railway detects the `Procfile` and starts a **web** service
 
-### Step 3 — Add environment variables in Railway
+### Step 3 — Add a persistent volume
 
-In your Railway project → **Variables** tab → add these one by one:
+In Railway → your service → **Volumes** tab:
+- Mount path: `/data`
+
+This keeps `holdings.json`, the token, and caches across restarts.
+
+### Step 4 — Add environment variables
+
+In Railway → **Variables** tab:
 
 | Variable | Value |
 |----------|-------|
 | `KITE_API_KEY` | Your Kite API key |
 | `KITE_API_SECRET` | Your Kite API secret |
-| `KITE_ACCESS_TOKEN` | Today's access token (from `generate_token.py`) |
+| `KITE_USER_ID` | Your Zerodha user ID |
+| `KITE_PASSWORD` | Your Zerodha password |
+| `KITE_TOTP_SECRET` | Your TOTP base32 secret |
 | `NTFY_TOPIC` | `my_stock_alerts` |
+| `DATA_DIR` | `/data` |
 
-### Step 4 — Deploy
+### Step 5 — Set Zerodha postback URL
 
-Railway deploys automatically when you push to GitHub.  
-Check **Deployments → Logs** to confirm the agent started and you received a startup notification.
+In [developers.kite.trade](https://developers.kite.trade) → your app → **Postback URL**:
 
-### Step 5 — Renew the access token every morning
-
-Since Kite tokens expire daily:
-
-```bash
-# Run locally each morning before 9:15 AM IST
-python generate_token.py
-
-# Copy the printed token, then update Railway:
-railway variables set KITE_ACCESS_TOKEN=<new_token>
-
-# Railway redeploys automatically after the variable update
+```
+https://<your-railway-url>/postback
 ```
 
-Or update it via the Railway dashboard: **Variables → KITE_ACCESS_TOKEN → Edit**.
+This enables real-time trade updates in addition to the daily portfolio sync.
+
+### Step 6 — Deploy
+
+Railway deploys automatically on every `git push`. Check **Deployments → Logs** to confirm startup.
+
+---
+
+## Dashboard
+
+The live dashboard is available at `https://<your-railway-url>/holdings`.
+
+- Portfolio P&L with live prices
+- Holdings and watchlist management (add/remove stocks)
+- Intraday charts per stock
+- Alert log and SEBI filing history
+- Kite token status and manual re-auth
+
+---
+
+## Kite Token — Fully Automated
+
+The Kite access token expires daily at **6:00 AM IST**. The agent handles this automatically:
+
+- **6:05 AM IST** — logs in using `KITE_USER_ID`, `KITE_PASSWORD`, and a TOTP code auto-generated from `KITE_TOTP_SECRET`
+- **On every restart** — checks if the saved token is from today; re-logs in if not
+- You receive a push notification when the token is renewed
+
+No manual action is ever needed.
+
+**Fallback:** If auto-login fails, visit `https://<your-railway-url>/kite/renew` to authorize manually.
 
 ---
 
@@ -159,54 +158,53 @@ Or update it via the Railway dashboard: **Variables → KITE_ACCESS_TOKEN → Ed
 ```
 stock_alert_agent/
 ├── main.py              # Entry point — scheduler and task orchestration
-├── kite_client.py       # Zerodha API wrapper (holdings, quotes, history)
+├── kite_client.py       # Zerodha API wrapper — login, quotes, portfolio sync
 ├── alerts.py            # All alert logic and duplicate-prevention
+├── holdings_manager.py  # Read/write holdings.json, sync from Kite API
+├── watchlist_manager.py # Read/write watchlist.json
+├── postback_server.py   # Flask server — trade postbacks + live dashboard
 ├── scrapers.py          # NSE (FII/DII, announcements) and SEBI scrapers
 ├── notifier.py          # ntfy.sh push notification sender
-├── watchlist_manager.py # Read/write watchlist.json
-├── config.py            # All thresholds and settings (edit here to tune)
-├── generate_token.py    # Run daily to refresh Kite access token
-├── watchlist.json       # Your stock watchlist — edit freely
-├── alerts_log.json      # Auto-managed duplicate-alert tracking
-├── .env                 # Your secrets — never commit this
+├── market_data.py       # Market data helpers
+├── config.py            # Thresholds and settings
+├── generate_token.py    # One-time manual token helper (not needed in normal use)
 ├── requirements.txt     # Python dependencies
 ├── Procfile             # Railway deployment config
-└── .gitignore           # Keeps .env out of git
+└── .gitignore
 ```
 
 ---
 
 ## Tuning Thresholds
 
-All alert thresholds are in `config.py`:
+All alert thresholds are in `config.py` and can also be adjusted live from the dashboard Settings tab:
 
-```python
-HOLDINGS_DROP_THRESHOLD  = 20    # % drop from avg buy price
-WATCHLIST_DROP_THRESHOLD = 20    # % drop from 52-week high
-VOLUME_SPIKE_MULTIPLIER  = 3     # x times the 30-day avg volume
-FII_DII_THRESHOLD_CRORES = 3000  # ₹ crore net FII or DII flow
-ALERT_COOLDOWN_HOURS     = 4     # Suppress repeat alerts for 4 hours
-```
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `HOLDINGS_DROP_THRESHOLD` | 20% | Drop from avg buy price to trigger holding alert |
+| `WATCHLIST_DROP_THRESHOLD` | 20% | Drop from 52-week high to trigger watchlist alert |
+| `VOLUME_SPIKE_MULTIPLIER` | 3x | Today's volume vs 30-day average |
+| `FII_DII_THRESHOLD_CRORES` | ₹3,000 Cr | Net FII or DII flow threshold |
+| `ALERT_COOLDOWN_HOURS` | 4 hours | Suppress repeat alerts per stock per type |
 
 ---
 
 ## Troubleshooting
 
-**No alerts received at all**
-- Check that you subscribed to the correct ntfy topic
-- Run `python main.py` locally and watch the logs
+**Stock I bought isn't showing in the dashboard**
+- Holdings sync from Zerodha on every startup — redeploy or restart the service and it will appear.
+- Same-day buys (T1) are included immediately.
 
-**"Kite authentication failed" alert**
-- Your access token expired — run `python generate_token.py` and update `KITE_ACCESS_TOKEN`
+**"Kite token expired" notifications at market open**
+- This was a known issue caused by Railway restarts loading a stale token. Fixed — the agent now validates the token age on startup and re-logs in automatically.
 
-**FII/DII data returns empty**
-- NSE sometimes changes their API format. Check the logs for the raw response.
-- The agent will retry on the next scheduled run.
+**No alerts received**
+- Check you subscribed to the correct ntfy topic (`my_stock_alerts`)
+- Check Railway logs for errors
 
-**SEBI scraper not finding announcements**
-- NSE may return 403 if cookies expire mid-session. The scraper retries once automatically.
-- Check `Deployments → Logs` on Railway for details.
+**FII/DII data empty**
+- NSE occasionally changes their API. The agent retries on the next scheduled run. Check logs for details.
 
-**Agent crashes on Railway**
-- Check the logs. The most common cause is an expired Kite token.
-- Railway auto-restarts crashed workers, so a fresh token + redeploy fixes it.
+**Auto-login failed notification**
+- Visit `https://<your-railway-url>/kite/renew` to re-authenticate manually
+- Verify `KITE_USER_ID`, `KITE_PASSWORD`, `KITE_TOTP_SECRET` are correct in Railway Variables (no extra spaces)
